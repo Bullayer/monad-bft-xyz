@@ -466,6 +466,9 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpc
     })
 }
 
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MonadNoParams([(); 0]);
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::U256;

@@ -19,6 +19,7 @@ use criterion::{
     Criterion, Throughput,
 };
 use monad_rpc::{
+    eth_json_types::MonadNoParams,
     handlers::eth::call::MonadEthCallParams,
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper},
 };
@@ -180,7 +181,7 @@ fn bench(c: &mut Criterion) {
         Err(JsonRpcError::parse_error()),
     );
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<true, MonadNoParams, _>(
         &mut g,
         "attack_large_payload_array_without_params",
         &Bytes::from_owner(
@@ -192,10 +193,10 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Ok(ResponseWrapper::Single(())),
+        Err(JsonRpcError::invalid_params()),
     );
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<true, MonadNoParams, _>(
         &mut g,
         "attack_large_payload_dict_without_params",
         &Bytes::from_owner(
@@ -207,7 +208,7 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Ok(ResponseWrapper::Single(())),
+        Err(JsonRpcError::invalid_params()),
     );
 
     bench_deserialize::<true, (), _>(

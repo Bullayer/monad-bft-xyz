@@ -150,7 +150,7 @@ impl BftBlockIndex {
 
         info!(?candidates, "Found {} candidates", candidates.len());
 
-        let candidates = candidates.into_iter().into_iter().filter_map(|key| {
+        let candidates = candidates.into_iter().filter_map(|key| {
             info!("Candidate key: {}", key);
             let hex_str = key
                 .strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?
@@ -193,7 +193,7 @@ impl BftBlockIndex {
         futures::stream::iter(known_committable_heads.iter())
             .for_each_concurrent(Some(100), |marker| {
                 retry_forever(
-                    move || self.write_marker(&marker),
+                    move || self.write_marker(marker),
                     "write marker",
                     RETRY_DELAY,
                 )
@@ -246,7 +246,7 @@ impl BftBlockIndex {
                 marker.end_num = next_num;
             }
 
-            retry_forever(|| self.write_marker(&marker), "write marker", RETRY_DELAY).await;
+            retry_forever(|| self.write_marker(marker), "write marker", RETRY_DELAY).await;
             info!("Written marker {:?}", marker);
         }
 

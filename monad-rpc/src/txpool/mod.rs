@@ -28,7 +28,6 @@ use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use state::TxStatusReceiverSender;
-use tokio::pin;
 use tracing::warn;
 
 pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};

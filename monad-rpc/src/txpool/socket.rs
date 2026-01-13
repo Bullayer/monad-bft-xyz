@@ -18,7 +18,7 @@ use std::{ffi::OsStr, io, path::PathBuf, task::Poll};
 use futures::{executor::block_on, Future};
 use notify::{Event, RecursiveMode, Watcher};
 use pin_project::pin_project;
-use tokio::{pin, sync::mpsc};
+use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 const MEMPOOL_TX_IPC_FILE: &str = "mempool.sock";

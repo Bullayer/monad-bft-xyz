@@ -78,11 +78,11 @@ pub(crate) fn spawn_tasks(
     spawn(rx::task(
         cfg,
         tcp_control_map,
-        addrlist,
+        addrlist.clone(),
         tcp_listener,
         tcp_ingress_tx,
     ));
-    spawn(tx::task(tcp_egress_rx));
+    spawn(tx::task(cfg, addrlist, tcp_egress_rx));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

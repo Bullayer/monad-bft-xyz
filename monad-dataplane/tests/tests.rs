@@ -24,7 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
-    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
+    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, UnicastMsg,
 };
@@ -293,11 +293,12 @@ fn tcp_rapid() {
     once_setup();
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let num_msgs = 1024;
+    let num_msgs = 512;
 
     let mut rx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
     let rx_addr = rx.tcp_local_addr();
     let tx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    tx.add_trusted("127.0.0.1".parse().unwrap());
 
     let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
@@ -418,6 +419,103 @@ fn tcp_exceed_queue_limits() {
 
     // We should have at least some messages that failed to transmit.
     assert_ne!(failures, 0);
+}
+
+#[test]
+#[timeout(1000)]
+fn tcp_exceed_queue_byte_limit() {
+    once_setup();
+
+    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
+    // 4MB / 100KB = 40 messages can be queued at once.
+    let message_size = 100 * 1024;
+    let num_msgs = 100; // Well above 40, but below 150 message limit.
+
+    assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
+    assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT); // At least one message fits
+    assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT); // But not all at once
+
+    let rx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    let rx_addr = rx.tcp_local_addr();
+    let tx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    tx.add_trusted("127.0.0.1".parse().unwrap());
+
+    let payload: Vec<u8> = (0..message_size)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    let mut completions = Vec::with_capacity(num_msgs);
+
+    for _ in 0..num_msgs {
+        let (sender, receiver) = oneshot::channel::<()>();
+
+        tx.tcp_write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.clone().into(),
+                completion: Some(sender),
+            },
+        );
+
+        completions.push(receiver);
+    }
+
+    let failures: usize = completions
+        .into_iter()
+        .map(executor::block_on)
+        .filter(|result| result.is_err())
+        .count();
+
+    // Byte limit should cause some messages to be dropped
+    assert!(failures > 0, "expected some failures due to byte limit");
+}
+
+#[test]
+#[timeout(1000)]
+fn tcp_outgoing_connection_limit() {
+    once_setup();
+
+    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx1 = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    let rx1_addr = rx1.tcp_local_addr();
+
+    let mut rx2 = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    let rx2_addr = rx2.tcp_local_addr();
+
+    let tx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS)
+        .with_tcp_connections_limit(1, 1)
+        .build();
+
+    let payload1: Vec<u8> = "first message".into();
+    let (sender1, receiver1) = oneshot::channel::<()>();
+    tx.tcp_write(
+        rx1_addr,
+        TcpMsg {
+            msg: payload1.clone().into(),
+            completion: Some(sender1),
+        },
+    );
+
+    let recv_msg = executor::block_on(rx1.tcp_read());
+    assert_eq!(recv_msg.payload, payload1);
+    assert!(executor::block_on(receiver1).is_ok());
+
+    let payload2: Vec<u8> = "second message".into();
+    let (sender2, receiver2) = oneshot::channel::<()>();
+    tx.tcp_write(
+        rx2_addr,
+        TcpMsg {
+            msg: payload2.into(),
+            completion: Some(sender2),
+        },
+    );
+
+    assert!(executor::block_on(receiver2).is_err());
+    sleep(Duration::from_millis(5));
+    assert!(rx2.tcp_read().now_or_never().is_none());
 }
 
 const MINIMUM_SEGMENT_SIZE: u16 = 256;

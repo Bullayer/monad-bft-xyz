@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use clap::Parser;
 use eyre::bail;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
@@ -34,26 +33,42 @@ mod migrate_logs;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let mut args = cli::Cli::parse();
-    info!(?args, "Cli Arguments: ");
-
-    match std::mem::take(&mut args.command) {
-        Some(cli::Commands::MigrateLogs {
-            start_block,
-            stop_block,
-        }) => run_migrate_logs(args, start_block, stop_block).await,
-        Some(cli::Commands::MigrateCapped {
-            db_name,
-            coll_name,
-            batch_size,
-            free_factor,
-        }) => run_migrate_capped(db_name, coll_name, batch_size, free_factor, args).await,
-        Some(cli::Commands::SetStartBlock {
-            block,
-            archive_sink,
-            async_backfill,
-        }) => run_set_start_block(block, archive_sink, async_backfill).await,
-        None => run_indexer(args).await,
+    match cli::Cli::parse() {
+        cli::ParsedCli::Command { command, args } => match command {
+            cli::Commands::MigrateLogs {
+                start_block,
+                stop_block,
+            } => run_migrate_logs(args.into_cli()?, start_block, stop_block).await,
+            cli::Commands::MigrateCapped {
+                db_name,
+                coll_name,
+                batch_size,
+                free_factor,
+            } => {
+                run_migrate_capped(
+                    db_name,
+                    coll_name,
+                    batch_size,
+                    free_factor,
+                    args.into_cli()?,
+                )
+                .await
+            }
+            cli::Commands::SetStartBlock {
+                block,
+                async_backfill,
+            } => {
+                let archive_sink = match args.archive_sink {
+                    Some(archive_sink) => archive_sink,
+                    None => bail!("archive_sink must be provided"),
+                };
+                run_set_start_block(block, archive_sink, async_backfill).await
+            }
+        },
+        cli::ParsedCli::Daemon(args) => {
+            info!(?args, "Cli Arguments: ");
+            run_indexer(args).await
+        }
     }
 }
 

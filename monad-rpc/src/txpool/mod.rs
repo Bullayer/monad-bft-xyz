@@ -24,8 +24,8 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
-use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool_ipc::EthTxPoolIpcClient;
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolIpcTx, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use state::TxStatusReceiverSender;
 use tokio::pin;

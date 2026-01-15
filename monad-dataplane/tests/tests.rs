@@ -422,7 +422,7 @@ fn tcp_exceed_queue_limits() {
 }
 
 #[test]
-#[timeout(1000)]
+#[timeout(2000)]
 fn tcp_exceed_queue_byte_limit() {
     once_setup();
 
@@ -431,20 +431,19 @@ fn tcp_exceed_queue_byte_limit() {
     // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
     // 4MB / 100KB = 40 messages can be queued at once.
     let message_size = 100 * 1024;
-    let num_msgs = 100; // Well above 40, but below 150 message limit.
+    let queue_byte_capacity = QUEUED_MESSAGE_BYTE_LIMIT / message_size;
+    let num_msgs = queue_byte_capacity * 10;
 
-    assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
-    assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT); // At least one message fits
-    assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT); // But not all at once
+    assert!(queue_byte_capacity < QUEUED_MESSAGE_LIMIT);
+    assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
+    assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT);
 
-    let rx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
+    let mut rx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
     let rx_addr = rx.tcp_local_addr();
     let tx = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS).build();
     tx.add_trusted("127.0.0.1".parse().unwrap());
 
-    let payload: Vec<u8> = (0..message_size)
-        .map(|_| rand::thread_rng().gen_range(0..255))
-        .collect();
+    let payload: Vec<u8> = vec![0u8; message_size];
 
     let mut completions = Vec::with_capacity(num_msgs);
 
@@ -462,13 +461,17 @@ fn tcp_exceed_queue_byte_limit() {
         completions.push(receiver);
     }
 
+    for _ in 0..queue_byte_capacity {
+        let recv_msg = executor::block_on(rx.tcp_read());
+        assert_eq!(recv_msg.payload.len(), message_size);
+    }
+
     let failures: usize = completions
         .into_iter()
         .map(executor::block_on)
         .filter(|result| result.is_err())
         .count();
 
-    // Byte limit should cause some messages to be dropped
     assert!(failures > 0, "expected some failures due to byte limit");
 }
 

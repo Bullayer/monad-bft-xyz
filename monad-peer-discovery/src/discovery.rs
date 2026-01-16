@@ -49,6 +49,8 @@ type RateLimiter = governor::RateLimiter<
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
+/// Rate limit for incoming peer lookup requests (per second)
+const PEER_LOOKUP_RATE_LIMIT_PER_SECOND: u32 = 10;
 /// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
 /// Number of validators to connect to if self is a full node
@@ -184,6 +186,8 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub persisted_peers_path: PathBuf,
     // rate limiter for incoming pings
     ping_rate_limiter: RateLimiter,
+    // rate limiter for incoming peer lookup requests
+    peer_lookup_rate_limiter: RateLimiter,
 }
 
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
@@ -286,6 +290,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
                     NonZeroU32::new(self.ping_rate_limit_per_second).unwrap(),
                 )
                 .allow_burst(NonZeroU32::new(self.ping_rate_limit_per_second).unwrap()),
+            ),
+            peer_lookup_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(
+                    NonZeroU32::new(PEER_LOOKUP_RATE_LIMIT_PER_SECOND).unwrap(),
+                )
+                .allow_burst(NonZeroU32::new(PEER_LOOKUP_RATE_LIMIT_PER_SECOND).unwrap()),
             ),
         };
 
@@ -1012,6 +1022,14 @@ where
         self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST] += 1;
 
         let mut cmds = Vec::new();
+
+        // check rate limit for incoming peer lookup requests
+        if self.peer_lookup_rate_limiter.check().is_err() {
+            debug!(?from, "peer lookup rate limit exceeded, dropping request");
+            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            return cmds;
+        }
+
         let target = request.target;
 
         let mut name_records = if target == self.self_id {
@@ -1872,6 +1890,10 @@ mod tests {
                 governor::Quota::per_second(NonZeroU32::new(100).unwrap())
                     .allow_burst(NonZeroU32::new(100).unwrap()),
             ),
+            peer_lookup_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(NonZeroU32::new(5).unwrap())
+                    .allow_burst(NonZeroU32::new(5).unwrap()),
+            ),
         }
     }
 
@@ -2004,8 +2026,67 @@ mod tests {
         assert_eq!(connection_info.unwrap().last_ping, last_ping);
     }
 
+    fn test_rate_limit_helper<F>(
+        state: &mut PeerDiscovery<SignatureType>,
+        rate_limit: u32,
+        mut send_request: F,
+        check_accepted: fn(&[PeerDiscoveryCommand<SignatureType>]) -> bool,
+    ) where
+        F: FnMut(
+            &mut PeerDiscovery<SignatureType>,
+            u32,
+        ) -> Vec<PeerDiscoveryCommand<SignatureType>>,
+    {
+        // send requests up to rate limit
+        for i in 0..rate_limit {
+            let cmds = send_request(state, i);
+            assert!(check_accepted(&cmds), "request {i} should be accepted");
+        }
+
+        // next request should be rate limited and dropped
+        let cmds = send_request(state, rate_limit + 1);
+        assert_eq!(cmds.len(), 0, "request should be rate limited and dropped");
+        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+
+        // advance time by 1 second
+        std::thread::sleep(Duration::from_secs(1));
+
+        // next request should be accepted
+        let cmds = send_request(state, rate_limit + 2);
+        assert!(
+            check_accepted(&cmds),
+            "request after sleep should be accepted"
+        );
+    }
+
     #[test]
     fn test_rate_limit_pings() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer_name_record = generate_name_record(peer1, 0);
+
+        let mut state = generate_test_state(peer0, vec![]);
+
+        test_rate_limit_helper(
+            &mut state,
+            100, // ping rate limit in test state
+            |state, id| {
+                state.handle_ping(
+                    peer1_pubkey,
+                    Ping {
+                        id,
+                        local_name_record: peer_name_record.clone(),
+                    },
+                )
+            },
+            |cmds| !cmds.is_empty(),
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_peer_lookup_requests() {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
@@ -2013,42 +2094,21 @@ mod tests {
 
         let mut state = generate_test_state(peer0, vec![]);
 
-        // handle pings up to rate limit (100 pings per second)
-        let peer_name_record = generate_name_record(peer1, 0);
-        for i in 0..100 {
-            let cmds = state.handle_ping(
-                peer1_pubkey,
-                Ping {
-                    id: i,
-                    local_name_record: peer_name_record.clone(),
-                },
-            );
-            assert_ne!(cmds.len(), 0); // should not drop pings
-        }
-
-        // next ping should be rate limited and dropped
-        let cmds = state.handle_ping(
-            peer1_pubkey,
-            Ping {
-                id: 101,
-                local_name_record: peer_name_record.clone(),
+        test_rate_limit_helper(
+            &mut state,
+            5, // peer lookup rate limit in test state
+            |state, id| {
+                state.handle_peer_lookup_request(
+                    peer1_pubkey,
+                    PeerLookupRequest {
+                        lookup_id: id,
+                        target: peer1_pubkey,
+                        open_discovery: false,
+                    },
+                )
             },
+            |cmds| cmds.len() == 1,
         );
-        assert_eq!(cmds.len(), 0); // should be rate limited and dropped
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
-
-        // advance time by 1 second
-        std::thread::sleep(Duration::from_secs(1));
-
-        // next ping should be accepted
-        let cmds = state.handle_ping(
-            peer1_pubkey,
-            Ping {
-                id: 102,
-                local_name_record: peer_name_record,
-            },
-        );
-        assert_ne!(cmds.len(), 0); // should not drop pings
     }
 
     #[test]
@@ -3045,6 +3105,10 @@ mod tests {
             ping_rate_limiter: governor::RateLimiter::direct(
                 governor::Quota::per_second(NonZeroU32::new(100).unwrap())
                     .allow_burst(NonZeroU32::new(100).unwrap()),
+            ),
+            peer_lookup_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(NonZeroU32::new(5).unwrap())
+                    .allow_burst(NonZeroU32::new(5).unwrap()),
             ),
         };
 

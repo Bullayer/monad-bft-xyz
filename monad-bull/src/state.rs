@@ -97,7 +97,7 @@ impl NodeState {
             // manytrace_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let (reload_handle, agent) = NodeState::setup_tracing()?;
+        let (reload_handle, _) = NodeState::setup_tracing()?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 

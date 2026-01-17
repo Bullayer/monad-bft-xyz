@@ -1,0 +1,39 @@
+[package]
+name = "monad-bull"
+description = "Monad bull node"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "monad-bull"
+bench = false
+
+[dependencies]
+monad-version = { workspace = true }
+monad-bls = { workspace = true }
+monad-chain-config = { workspace = true }
+monad-consensus-state = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-control-panel = { workspace = true }
+monad-crypto = { workspace = true }
+monad-keystore = { workspace = true }
+monad-ledger = { workspace = true }
+monad-node-config = { workspace = true, features = ["crypto"] }
+monad-secp = { workspace = true }
+monad-types = { workspace = true }
+
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+clap = { workspace = true, features = ["derive"] }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tracing = { workspace = true, features = ["log"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+hex = { workspace = true }
+toml = { workspace = true }
+
+[build-dependencies]
+monad-version = { workspace = true }

@@ -5010,6 +5010,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-bull"
+version = "0.1.0"
+dependencies = [
+ "clap 4.5.47",
+ "hex",
+ "monad-bls",
+ "monad-chain-config",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-control-panel",
+ "monad-crypto",
+ "monad-keystore",
+ "monad-ledger",
+ "monad-node-config",
+ "monad-secp",
+ "monad-types",
+ "monad-version",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rayon",
+ "reqwest 0.11.27",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-chain-config"
 version = "0.1.0"
 dependencies = [

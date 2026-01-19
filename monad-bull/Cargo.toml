@@ -9,31 +9,56 @@ name = "monad-bull"
 bench = false
 
 [dependencies]
-monad-version = { workspace = true }
 monad-bls = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-control-panel = { workspace = true }
 monad-crypto = { workspace = true }
+monad-dataplane = { workspace = true }
+monad-eth-block-policy = { workspace = true }
+monad-eth-block-validator = { workspace = true }
+monad-eth-txpool-executor = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
 monad-keystore = { workspace = true }
 monad-ledger = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
+monad-peer-discovery = { workspace = true }
+monad-raptorcast = { workspace = true }
+monad-router-multi = { workspace = true}
 monad-secp = { workspace = true }
+monad-state = { workspace = true }
+monad-state-backend = { workspace = true }
+# monad-statesync = { workspace = true }
+# monad-pprof = { workspace = true }
+# monad-triedb-cache = { workspace = true }
+# monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
+monad-updaters = { workspace = true, features = ["tokio"] }
+monad-validator = { workspace = true }
+monad-version = { workspace = true }
+monad-wal = { workspace = true }
+monad-wireauth = { workspace = true }
 
+alloy-rlp = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
-clap = { workspace = true, features = ["derive"] }
+opentelemetry-semantic-conventions = { workspace = true }
+rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
-reqwest = { workspace = true, features = ["blocking"] }
+toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-hex = { workspace = true }
-toml = { workspace = true }
 
 [build-dependencies]
 monad-version = { workspace = true }

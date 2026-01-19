@@ -57,8 +57,8 @@ pub struct Cli {
     pub mempool_ipc_path: PathBuf,
 
     /// Set the monad triedb path
-    #[arg(long)]
-    pub triedb_path: PathBuf,
+    // #[arg(long)]
+    // pub triedb_path: PathBuf,
 
     /// Set a custom monad control panel ipc path
     #[arg(long)]

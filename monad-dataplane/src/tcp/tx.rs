@@ -282,23 +282,36 @@ async fn connect_and_send_messages(
 }
 
 fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
-    let r = unsafe {
-        let cork_flag: libc::c_int = if cork_flag { 1 } else { 0 };
+    #[cfg(target_os = "linux")]
+    {
+        let r = unsafe {
+            let cork_flag: libc::c_int = if cork_flag { 1 } else { 0 };
 
-        libc::setsockopt(
-            raw_fd,
-            libc::SOL_TCP,
-            libc::TCP_CORK,
-            &cork_flag as *const _ as _,
-            std::mem::size_of_val(&cork_flag) as _,
-        )
-    };
+            libc::setsockopt(
+                raw_fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_CORK,
+                &cork_flag as *const _ as _,
+                std::mem::size_of_val(&cork_flag) as _,
+            )
+        };
 
-    if r != 0 {
-        warn!(
-            "setsockopt(TCP_CORK) failed with: {}",
-            Error::last_os_error()
-        );
+        if r != 0 {
+            warn!(
+                "setsockopt(TCP_CORK) failed with: {}",
+                Error::last_os_error()
+            );
+        }
+    }
+
+    // macOS and other Unix-like systems handle TCP corking differently
+    // macOS TCP stack has good default behavior, so we skip this optimization
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On macOS and other BSD systems, TCP_CORK equivalent doesn't exist.
+        // The macOS TCP stack is well-optimized by default and doesn't need
+        // explicit corking. We simply ignore this setting.
+        let _ = (raw_fd, cork_flag); // Avoid unused parameter warnings
     }
 }
 

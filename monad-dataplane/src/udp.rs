@@ -136,23 +136,36 @@ fn set_send_buffer_size(socket: &UdpSocket, requested_size: usize) {
 }
 
 fn set_mtu_discovery(socket: &UdpSocket) {
-    const MTU_DISCOVER: libc::c_int = libc::IP_PMTUDISC_OMIT;
-    let raw_fd = socket.as_raw_fd();
-
-    if unsafe {
-        libc::setsockopt(
-            raw_fd,
-            libc::SOL_IP,
-            libc::IP_MTU_DISCOVER,
-            &MTU_DISCOVER as *const _ as _,
-            std::mem::size_of_val(&MTU_DISCOVER) as _,
-        )
-    } != 0
+    #[cfg(target_os = "linux")]
     {
-        panic!(
-            "set IP_MTU_DISCOVER failed with: {}",
-            Error::last_os_error()
-        );
+        const MTU_DISCOVER: libc::c_int = libc::IP_PMTUDISC_OMIT;
+        let raw_fd = socket.as_raw_fd();
+
+        if unsafe {
+            libc::setsockopt(
+                raw_fd,
+                libc::IPPROTO_IP,
+                libc::IP_MTU_DISCOVER,
+                &MTU_DISCOVER as *const _ as _,
+                std::mem::size_of_val(&MTU_DISCOVER) as _,
+            )
+        } != 0
+        {
+            panic!(
+                "set IP_MTU_DISCOVER failed with: {}",
+                Error::last_os_error()
+            );
+        }
+    }
+
+    // macOS and other Unix-like systems handle MTU discovery differently
+    // macOS enables path MTU discovery by default, so no additional configuration needed
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On macOS and other BSD systems, path MTU discovery is enabled by default
+        // and there is no direct equivalent to Linux's IP_MTU_DISCOVER option.
+        // The socket will use the system's default MTU discovery behavior.
+        let _ = socket; // Avoid unused parameter warning
     }
 }
 

@@ -29,7 +29,10 @@ use addrlist::Addrlist;
 use bytes::Bytes;
 use futures::channel::oneshot;
 use monad_types::UdpPriority;
+#[cfg(target_os = "linux")]
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
+#[cfg(not(target_os = "linux"))]
+use monoio::{spawn, time::Instant, LegacyDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
@@ -159,7 +162,40 @@ impl DataplaneBuilder {
                 let tcp_control_map = tcp_control_map.clone();
                 let addrlist = addrlist.clone();
                 move || {
+                    #[cfg(target_os = "linux")]
                     RuntimeBuilder::<IoUringDriver>::new()
+                        .enable_timer()
+                        .build()
+                        .expect("Failed building the Runtime")
+                        .block_on(async move {
+                            spawn(ban_expiry::task(
+                                addrlist.clone(),
+                                banned_ips_rx,
+                                ban_duration,
+                            ));
+
+                            tcp::spawn_tasks(
+                                tcp_config,
+                                tcp_control_map,
+                                addrlist.clone(),
+                                local_addr,
+                                tcp_ingress_tx,
+                                tcp_egress_rx,
+                            );
+                            udp::spawn_tasks(
+                                socket_configs,
+                                udp_egress_rx,
+                                up_bandwidth_mbps,
+                                udp_buffer_size,
+                            );
+
+                            ready_clone.store(true, Ordering::Release);
+
+                            futures::future::pending::<()>().await;
+                        });
+
+                    #[cfg(not(target_os = "linux"))]
+                    RuntimeBuilder::<LegacyDriver>::new()
                         .enable_timer()
                         .build()
                         .expect("Failed building the Runtime")

@@ -37,7 +37,6 @@ use tracing::{info, warn};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
-    Layer,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};
@@ -64,7 +63,7 @@ pub struct NodeState {
     pub control_panel_ipc_path: PathBuf,
     pub statesync_ipc_path: PathBuf,
     pub statesync_sq_thread_cpu: Option<u32>,
-    pub triedb_path: PathBuf,
+    // pub triedb_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
     // pub pprof: String,
@@ -86,7 +85,7 @@ impl NodeState {
             wal_path,
             ledger_path,
             mempool_ipc_path,
-            triedb_path,
+            // triedb_path,
             control_panel_ipc_path,
             statesync_ipc_path,
             statesync_sq_thread_cpu,
@@ -190,7 +189,7 @@ impl NodeState {
             validators_path: validators_config_path,
             wal_path,
             ledger_path,
-            triedb_path,
+            // triedb_path,
             mempool_ipc_path,
             control_panel_ipc_path,
             statesync_ipc_path,

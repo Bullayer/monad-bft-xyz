@@ -24,3 +24,5 @@ perf.data*
 **/proptest-regressions/
 /reports
 deployed_contracts.json
+
+.DS_Store

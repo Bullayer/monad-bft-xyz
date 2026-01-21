@@ -689,6 +689,7 @@ where
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.signing_key.pubkey());
+        warn!("RaptorCast self_id is {}", self_id);
 
         for command in commands {
             match command {

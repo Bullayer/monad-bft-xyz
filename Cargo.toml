@@ -5,6 +5,7 @@ exclude = ["monad-scripts"]
 
 [profile.dev]
 opt-level = 1
+# debug = true
 
 [profile.release]
 debug = true

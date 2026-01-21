@@ -188,6 +188,7 @@ impl DataplaneBuilder {
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
                             );
+                            warn!("dataplane LINUX tcp&udp bingo!!!");
 
                             ready_clone.store(true, Ordering::Release);
 
@@ -220,7 +221,7 @@ impl DataplaneBuilder {
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
                             );
-                            warn!("dataplane tcp&udp bingo!!!");
+                            warn!("dataplane MacOS tcp&udp bingo!!!");
 
                             ready_clone.store(true, Ordering::Release);
 

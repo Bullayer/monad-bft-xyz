@@ -907,6 +907,7 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
+        warn!("self nodeid is {}", nodeid);
         let block_timestamp = BlockTimestamp::new(
             5 * self.consensus_config.delta.as_nanos(),
             self.consensus_config.timestamp_latency_estimate_ns,

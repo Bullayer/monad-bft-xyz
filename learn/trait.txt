@@ -1,10 +1,437 @@
 常用trait
 
-fmt::Debug
-default::Default
+## `fmt::Debug` trait 用法
 
-borrow::ToOwned
-`to_owned()` 是 `ToOwned` trait 提供的方法。
+`fmt::Debug` 是 Rust 标准库中用于调试输出的 trait，它允许类型使用 `{:?}` 格式说明符进行格式化。
+
+### 1. 自动派生（最常用）
+
+```rust
+#[derive(Debug)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Debug)]
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    println!("{:?}", p);  // 输出: Point { x: 10, y: 20 }
+    
+    let dir = Direction::North;
+    println!("{:?}", dir); // 输出: North
+}
+```
+
+### 2. 手动实现
+
+```rust
+use std::fmt;
+
+struct Complex {
+    real: f64,
+    imag: f64,
+}
+
+impl fmt::Debug for Complex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} + {}i", self.real, self.imag)
+    }
+}
+
+fn main() {
+    let c = Complex { real: 3.14, imag: 2.71 };
+    println!("{:?}", c);  // 输出: 3.14 + 2.71i
+}
+```
+
+### 3. 常用场景
+
+#### 调试输出
+```rust
+let data = vec![1, 2, 3, 4, 5];
+println!("Debug: {:?}", data);  // [1, 2, 3, 4, 5]
+```
+
+#### 错误信息
+```rust
+#[derive(Debug)]
+struct CustomError {
+    message: String,
+    code: i32,
+}
+
+fn operation() -> Result<(), CustomError> {
+    Err(CustomError {
+        message: "Something went wrong".to_string(),
+        code: 404,
+    })
+}
+
+fn main() {
+    if let Err(e) = operation() {
+        eprintln!("Error: {:?}", e);
+        // 输出: Error: CustomError { message: "Something went wrong", code: 404 }
+    }
+}
+```
+
+#### 结构体调试
+```rust
+#[derive(Debug)]
+struct Person {
+    name: String,
+    age: u32,
+    email: Option<String>,
+}
+
+fn main() {
+    let person = Person {
+        name: "Alice".to_string(),
+        age: 30,
+        email: Some("alice@example.com".to_string()),
+    };
+    
+    // 漂亮打印（需要 # 标志）
+    println!("{:#?}", person);
+    // 输出:
+    // Person {
+    //     name: "Alice",
+    //     age: 30,
+    //     email: Some("alice@example.com"),
+    // }
+}
+```
+
+### 4. 与 `fmt::Display` 的区别
+
+- `fmt::Debug`: 用于调试，格式可能不稳定，使用 `{:?}`
+- `fmt::Display`: 用于用户友好的输出，使用 `{}`
+
+```rust
+use std::fmt;
+
+#[derive(Debug)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    println!("Debug: {:?}", p);  // Debug: Point { x: 10, y: 20 }
+    println!("Display: {}", p);  // Display: (10, 20)
+}
+```
+
+### 5. 泛型约束
+
+```rust
+fn debug_print<T: fmt::Debug>(item: T) {
+    println!("{:?}", item);
+}
+
+// 或使用 trait bound 语法
+fn debug_print_alt<T>(item: T) 
+where
+    T: fmt::Debug,
+{
+    println!("{:?}", item);
+}
+
+fn main() {
+    debug_print(42);
+    debug_print("hello");
+    debug_print(vec![1, 2, 3]);
+}
+```
+
+### 注意事项
+
+1. **`fmt::Debug` 不是稳定的API**：输出格式可能会在版本间改变
+2. **用于调试目的**：不要依赖特定的输出格式做解析
+3. **大多数标准库类型都实现了 `Debug`**：基本类型、集合、字符串等
+4. **自定义类型建议派生**：除非需要特殊的调试格式
+
+`fmt::Debug` 是 Rust 开发中最常用的 trait 之一，能大大简化调试过程。
+
+----------------------------------------------------------------
+
+## `default::Default` trait 解读
+
+`Default` trait 用于为类型提供默认值。它定义在 `std::default` 模块中，允许你使用 `Default::default()` 或简写 `default()` 来创建类型的默认实例。
+
+### 1. 基本用法
+
+#### 自动派生（最常用）
+
+```rust
+#[derive(Default)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Default)]
+struct Config {
+    host: String,
+    port: u16,
+    enabled: bool,
+}
+
+fn main() {
+    // 使用 Default::default()
+    let p1: Point = Default::default();  // Point { x: 0, y: 0 }
+    
+    // 使用 default() 方法（需要 use std::default::Default）
+    let p2 = Point::default();           // Point { x: 0, y: 0 }
+    
+    // 结构体字段的默认值
+    let config = Config::default();
+    // Config { host: "", port: 0, enabled: false }
+}
+```
+
+#### 手动实现
+
+```rust
+struct Complex {
+    real: f64,
+    imag: f64,
+}
+
+impl Default for Complex {
+    fn default() -> Self {
+        Complex {
+            real: 0.0,
+            imag: 0.0,
+        }
+    }
+}
+
+fn main() {
+    let c = Complex::default();  // Complex { real: 0.0, imag: 0.0 }
+}
+```
+
+### 2. 标准库类型默认值
+
+```rust
+fn main() {
+    // 基本类型
+    let n: i32 = Default::default();      // 0
+    let f: f64 = Default::default();      // 0.0
+    let b: bool = Default::default();     // false
+    
+    // 字符串
+    let s: String = Default::default();   // ""
+    
+    // 集合
+    let v: Vec<i32> = Default::default(); // []
+    let h: HashMap<String, i32> = Default::default(); // {}
+    
+    // 智能指针
+    let o: Option<i32> = Default::default(); // None
+    let r: Result<i32, String> = Default::default(); // Err("")
+}
+```
+
+### 3. 自定义默认值
+
+```rust
+#[derive(Default)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    max_connections: usize,
+}
+
+// 手动实现更复杂的默认值
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            max_connections: 100,
+        }
+    }
+}
+
+fn main() {
+    let config = ServerConfig::default();
+    // ServerConfig { host: "127.0.0.1", port: 8080, max_connections: 100 }
+}
+```
+
+### 4. 结构体更新语法
+
+```rust
+#[derive(Default)]
+struct User {
+    name: String,
+    email: String,
+    age: u32,
+    active: bool,
+}
+
+fn main() {
+    // 使用默认值，然后只修改部分字段
+    let user = User {
+        name: "Alice".to_string(),
+        email: "alice@example.com".to_string(),
+        ..Default::default()  // age: 0, active: false
+    };
+    
+    println!("{:?}", user);
+    // User { name: "Alice", email: "alice@example.com", age: 0, active: false }
+}
+```
+
+### 5. 泛型约束中的应用
+
+```rust
+// 要求泛型参数实现 Default
+fn create_default<T: Default>() -> T {
+    T::default()
+}
+
+// 在结构体中使用
+#[derive(Default)]
+struct Container<T: Default> {
+    value: T,
+}
+
+fn main() {
+    let c1: Container<i32> = Default::default();  // Container { value: 0 }
+    let c2: Container<String> = Default::default(); // Container { value: "" }
+    
+    let v1 = create_default::<Vec<i32>>();  // []
+    let v2 = create_default::<Option<String>>(); // None
+}
+```
+
+### 6. 枚举默认值
+
+```rust
+#[derive(Default)]
+enum Status {
+    #[default]  // 指定默认变体（Rust 1.62+）
+    Pending,
+    Running,
+    Completed,
+}
+
+#[derive(Default)]
+enum Priority {
+    Low = 0,
+    #[default]
+    Medium = 1,
+    High = 2,
+}
+
+fn main() {
+    let status: Status = Default::default();  // Status::Pending
+    let priority: Priority = Default::default(); // Priority::Medium
+}
+```
+
+### 7. 实际应用场景
+
+#### 配置管理
+
+```rust
+#[derive(Default)]
+struct AppConfig {
+    database_url: String,
+    log_level: String,
+    thread_count: usize,
+}
+
+impl AppConfig {
+    fn from_env() -> Self {
+        Self {
+            database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
+            log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            thread_count: std::env::var("THREAD_COUNT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(4),
+        }
+    }
+}
+
+fn main() {
+    // 使用环境变量或默认值
+    let config = AppConfig::from_env();
+}
+```
+
+#### 集合初始化
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Default)]
+struct Cache<T> {
+    data: HashMap<String, T>,
+    max_size: usize,
+}
+
+impl<T> Cache<T> {
+    fn new() -> Self {
+        Self {
+            max_size: 100,  // 自定义默认值
+            ..Default::default()
+        }
+    }
+}
+
+fn main() {
+    let cache: Cache<String> = Cache::new();
+}
+```
+
+#### 测试中的应用
+
+```rust
+#[derive(Default, Debug, PartialEq)]
+struct TestStruct {
+    value: i32,
+    name: String,
+}
+
+#[test]
+fn test_default_behavior() {
+    let instance = TestStruct::default();
+    assert_eq!(instance, TestStruct { value: 0, name: "".to_string() });
+}
+```
+
+### 注意事项
+
+1. **不是所有类型都有默认值**：引用类型 `&T` 没有默认值
+2. **自动派生要求所有字段实现 `Default`**：如果结构体包含没有默认值的字段，需要手动实现
+3. **性能考虑**：`Default::default()` 通常是零成本的，但对于复杂类型可能有开销
+4. **语义清晰**：使用 `Default` 时要确保默认值在语义上是合理的
+
+`Default` trait 是 Rust 中最常用的 trait 之一，它让类型初始化变得更加方便和安全。
+
+------------------------------------------------------------------------------
+
+## `to_owned()` 是 `ToOwned` trait 提供的方法。
 
 在这个代码片段中：
 
@@ -22,9 +449,11 @@ if let Some(name) = thread.name() {
 `ToOwned` trait 定义在 Rust 标准库中，用于从借用类型创建拥有的版本。
 对于字符串切片 `&str`，`to_owned()` 会创建一个新的 `String` 实例。
 
+-----------------------------------------------------------------------------
+
 Convert::Into
 
-Copy vs Clone
+-----------------------------------------------------------------------------
 
 Send vs Sync
 

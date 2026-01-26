@@ -1,5 +1,5 @@
 use crate::{Snapshot, Storage};
-use rust_rocksdb::{DB, Options, ColumnFamilyDescriptor};
+use rust_rocksdb::{DB, Options, ColumnFamilyDescriptor, ReadOptions};
 use std::path::Path;
 use std::sync::Arc;
 use std::fmt;
@@ -483,8 +483,10 @@ impl Snapshot for RocksDBStore {
 
 impl Storage for RocksDBStore {
     fn snapshot(&self) -> Box<dyn Snapshot> {
+        let snapshot = self.db.snapshot();
         Box::new(RocksDBSnapshot {
             db: Arc::clone(&self.db),
+            snapshot: unsafe { std::mem::transmute(snapshot) },
         })
     }
 
@@ -503,18 +505,15 @@ impl Storage for RocksDBStore {
 
 pub struct RocksDBSnapshot {
     db: Arc<DB>,
-}
-
-impl RocksDBSnapshot {
-    fn get_column_family(&self, name: &str) -> Option<&rust_rocksdb::ColumnFamily> {
-        self.db.cf_handle(name)
-    }
+    snapshot: rust_rocksdb::SnapshotWithThreadMode<'static, DB>,
 }
 
 impl Snapshot for RocksDBSnapshot {
     fn get(&self, key: &str) -> Option<Vec<u8>> {
-        self.get_column_family("default")
-            .and_then(|cf| self.db.get_cf(cf, key.as_bytes()).ok().flatten())
+        let cf = self.db.cf_handle("default")?;
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_snapshot(&self.snapshot);
+        self.db.get_cf_opt(cf, key.as_bytes(), &read_opts).ok().flatten()
     }
 
     fn contains(&self, key: &str) -> bool {
@@ -657,14 +656,24 @@ mod tests {
         
         let mut storage = RocksDBStore::new(&db_path).unwrap();
         storage.put("key1", b"value1".to_vec());
+        storage.put("key2", b"value2".to_vec());
         
         let snapshot = storage.snapshot();
         assert_eq!(snapshot.get("key1"), Some(b"value1".to_vec()));
+        assert_eq!(snapshot.get("key2"), Some(b"value2".to_vec()));
         
-        storage.put("key1", b"value2".to_vec());
+        storage.put("key1", b"new_value1".to_vec());
+        storage.put("key3", b"value3".to_vec());
+        storage.delete("key2");
+        
+        assert_eq!(snapshot.get("key1"), Some(b"value1".to_vec()), "快照应该看到创建时的旧值");
+        assert_eq!(snapshot.get("key2"), Some(b"value2".to_vec()), "快照应该看到已删除的键");
+        assert_eq!(snapshot.get("key3"), None, "快照不应该看到创建后添加的键");
         
         let new_snapshot = storage.snapshot();
-        assert_eq!(new_snapshot.get("key1"), Some(b"value2".to_vec()));
+        assert_eq!(new_snapshot.get("key1"), Some(b"new_value1".to_vec()));
+        assert_eq!(new_snapshot.get("key2"), None);
+        assert_eq!(new_snapshot.get("key3"), Some(b"value3".to_vec()));
     }
 
     #[test]

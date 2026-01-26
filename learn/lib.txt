@@ -1,6 +1,38 @@
 Option
+fn test_option() {
+    let mut op = Some(9);
+    assert!(op.is_some());
+    assert_eq!(op.is_none(), false);
+    assert!(op.is_some_and(|s| s > 8));
+    assert_eq!(op.is_none_or(|s| s > 10), false);
+
+    // Converts from `&Option<T>` to `Option<&T>`.
+    assert_eq!(op.as_ref(), Some(&9));
+    // Converts from `&mut Option<T>` to `Option<&mut T>`.
+    match op.as_mut() {
+        Some(v) => *v = *v * *v,
+        None => {},
+    }
+    assert_eq!(op, Some(81));
+
+    assert_eq!(op.unwrap(), 81);
+    assert_eq!(None.unwrap_or_else(|| 666), 666);
+
+    assert_eq!(op.map(|s| s + 100), Some(181));
+    assert_eq!(None.map_or(777, |x| x), 777);
+
+    assert_eq!(op.into_iter().next(), Some(81));
+    assert_eq!(op.iter().next(), Some(&81));
+}
+
 
 Result
 Iterator
 Tracing
 PhantomData
+
+IndexMap
+SortedVectorMap
+VecDeque
+
+Atomic::Ordering

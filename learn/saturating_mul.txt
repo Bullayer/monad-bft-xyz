@@ -1,0 +1,108 @@
+`saturating_mul` 是 Rust 标准库中整数类型的一个方法，用于执行**饱和乘法运算**。
+
+## 作用原理
+
+- **正常乘法**: `a * b` 可能会发生整数溢出
+- **饱和乘法**: `a.saturating_mul(b)` 当结果超过类型最大值时，返回该类型的最大值
+
+## 示例
+
+```rust
+let a: u8 = 200;
+let b: u8 = 200;
+
+// 正常乘法会溢出
+let normal = a * b; // 结果未定义，可能是 144 (200*200 % 256)
+
+// 饱和乘法
+let saturating = a.saturating_mul(b); // 结果是 255 (u8::MAX)
+```
+
+## 适用场景
+
+1. **防止溢出崩溃**: 在需要保证程序稳定性的地方
+2. **资源计算**: 如计算内存大小、超时时间等
+3. **游戏开发**: 计算分数、经验值等
+4. **金融计算**: 避免金额计算溢出
+
+## 相关方法
+
+Rust 还提供了其他饱和运算方法：
+- `saturating_add()` - 饱和加法
+- `saturating_sub()` - 饱和减法
+- `saturating_mul()` - 饱和乘法
+- `saturating_div()` - 饱和除法
+
+这些方法让整数运算更加安全，避免了意外的溢出行为。
+
+
+------------------------------------
+
+## `len.checked_sub(1)` 的解读
+
+`checked_sub(1)` 是 Rust 整数类型的安全减法方法，用于避免整数下溢。
+
+### 基本作用
+
+```rust
+// 假设 len 是 usize 或其他整数类型
+match len.checked_sub(1) {
+    Some(result) => {
+        // len >= 1, result = len - 1
+        // 使用 result...
+    }
+    None => {
+        // len == 0, 减法会下溢
+        // 处理边界情况...
+    }
+}
+```
+
+### 核心特性
+
+1. **安全检查**: 检测减法是否会导致下溢
+2. **返回 Option**: 
+   - `Some(value)`: 减法成功
+   - `None`: 会发生下溢
+
+### 项目中的使用示例
+
+从搜索结果可以看到：
+
+1. **区块编号处理**:
+   ```rust
+   let Some(prev_block_num) = block_num.checked_sub(1) else {
+       // 处理 genesis block 或无效情况
+   };
+   ```
+
+2. **数组长度处理**:
+   ```rust
+   // 安全地获取最后一个元素的索引
+   if let Some(last_index) = array.len().checked_sub(1) {
+       // 访问 array[last_index]
+   }
+   ```
+
+3. **Merkle 树计算**:
+   ```rust
+   let tree_len = 2_u16.checked_mul(num_leaves)?.checked_sub(1)?;
+   ```
+
+### 优势
+
+- **防止 panic**: 不会因为下溢而崩溃
+- **显式处理**: 强制开发者考虑边界情况
+- **函数式风格**: 支持链式调用和 `?` 操作符
+
+### 等价的非安全写法
+
+```rust
+// 不安全，可能 panic 或未定义行为
+let result = len - 1;  // 如果 len == 0，会下溢
+
+// 手动检查（繁琐）
+let result = if len > 0 { Some(len - 1) } else { None };
+```
+
+这种方法在处理索引、计数器、长度等可能为 0 的整数运算时特别有用。

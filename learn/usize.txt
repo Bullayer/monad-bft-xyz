@@ -1,0 +1,378 @@
+很好，这一题**非常对你现在的阶段**。
+`usize` 不是“又一个整型”，它是 **Rust 所有权 / 内存 / 容器 API 的核心 glue type**。
+
+我按这 5 层给你讲：
+
+```
+1) usize 到底是什么
+2) 为什么必须有 usize
+3) 在哪些地方只能用 usize
+4) 常见误用 & 坑
+5) 和你现在抠的系统层（runtime / allocator / scheduler）对齐
+```
+
+---
+
+# 一、usize 到底是什么？
+
+一句话：
+
+> `usize` = “能装下本平台任意内存地址的无符号整数”。
+
+官方定义：
+
+```rust
+type usize = unsigned integer type whose size is platform-dependent
+```
+
+| 平台     | usize 位宽 |
+| ------ | -------- |
+| 32-bit | 32 位     |
+| 64-bit | 64 位     |
+
+也就是说：
+
+```text
+在 64 位机器上：usize == u64
+在 32 位机器上：usize == u32
+```
+
+---
+
+# 二、为什么必须有 usize？
+
+因为这 3 个东西**在语言层面必须统一**：
+
+```
+1) 内存地址
+2) 容器下标
+3) 分配大小 / 长度 / 偏移
+```
+
+Rust 强制：
+
+> 所有“和内存布局有关的数字”
+> 一律用 `usize`。
+
+---
+
+## 2.1 指针 → 整数
+
+```rust
+let p: *const i32 = &x;
+let addr = p as usize;
+```
+
+只有 `usize` 被保证：
+
+> 能完整装下任意指针地址。
+
+---
+
+## 2.2 容器长度
+
+```rust
+let v = vec![1, 2, 3];
+let n: usize = v.len();
+```
+
+为什么不是 `u64`？
+
+因为：
+
+```text
+len() 要能和内存分配器对齐  
+len() 要能当指针偏移用  
+len() 要能用于 slice 边界检查
+```
+
+---
+
+## 2.3 指针偏移
+
+```rust
+let p = v.as_ptr();
+let q = unsafe { p.add(3) }; // 参数必须是 usize
+```
+
+为什么？
+
+> 偏移 = 地址 + offset
+> offset 必须是“能表达地址空间的整数”。
+
+---
+
+# 三、哪些地方**只能**用 usize？
+
+你会发现 Rust API 里非常“固执”：
+
+---
+
+## 3.1 下标访问
+
+```rust
+let v = vec![10, 20, 30];
+
+let x = v[1];     // ok
+let y = v[1u32]; // ❌ 编译错误
+```
+
+因为签名是：
+
+```rust
+impl<T> Index<usize> for Vec<T>
+```
+
+---
+
+## 3.2 slice 切片
+
+```rust
+let s = &v[1..3];      // ok
+let s = &v[1u32..3];  // ❌
+```
+
+---
+
+## 3.3 容量 / 长度
+
+```rust
+Vec::with_capacity(1024); // usize
+String::with_capacity(10);
+```
+
+---
+
+## 3.4 迭代器索引
+
+```rust
+for i in 0..v.len() {
+    // i 是 usize
+}
+```
+
+---
+
+# 四、那为什么不能统一用 u64？
+
+这是个**非常本质**的问题。
+
+---
+
+## 4.1 在 32 位平台会炸
+
+```text
+u64 = 64 位  
+指针 = 32 位  
+```
+
+如果允许：
+
+```rust
+let offset: u64 = 1_000_000_000_000;
+p.add(offset); // ❌ 实际地址空间根本不可能存在
+```
+
+这会让：
+
+* 指针运算失去类型约束
+* slice 越界检查变得不可证明
+
+---
+
+## 4.2 usize = 编译期“地址空间契约”
+
+Rust 在用 `usize` 做一件事：
+
+> 把“这个数能否代表合法内存位置”
+> 变成类型系统的一部分。
+
+---
+
+# 五、最常见的 5 个 usize 坑（你一定会踩）
+
+---
+
+## 5.1 usize 不是“业务数值类型”
+
+```rust
+let count: usize = read_from_db(); // ❌ 非常不对味
+```
+
+正确姿势：
+
+```rust
+let count: u64 = read_from_db();
+let idx: usize = count as usize; // 明确语义边界
+```
+
+**原则：**
+
+> 业务数值 ≠ 内存索引
+
+---
+
+## 5.2 usize 和 i32 / u64 混算
+
+```rust
+let i: i32 = -1;
+let idx = i as usize; // 😱 变成一个巨大的正数
+```
+
+这在 slice 里会直接 panic 或 UB。
+
+---
+
+## 5.3 用 usize 表示“长度”但参与算术
+
+```rust
+let len = v.len(); // usize
+let new = len - 1; // ❌ 如果 len = 0 会 underflow
+```
+
+更安全：
+
+```rust
+let new = len.checked_sub(1);
+```
+
+---
+
+## 5.4 用 usize 做网络协议 / 文件格式字段
+
+```rust
+struct Header {
+    size: usize, // ❌ 不可移植
+}
+```
+
+因为：
+
+> 64 位和 32 位机器上大小不一样。
+
+---
+
+## 5.5 usize 序列化 / 跨进程通信
+
+```rust
+bincode::serialize(&usize_val) // ❌ 非稳定 ABI
+```
+
+必须换成：
+
+```rust
+u64 / u32
+```
+
+---
+
+# 六、你现在抠的那几块里，usize 是“隐藏主角”
+
+这部分和你最近在抠的 Tokio / Rayon / 共识 runtime 非常对齐。
+
+---
+
+## 6.1 Tokio / Rayon 的队列索引
+
+```rust
+struct Deque<T> {
+    top: AtomicUsize,
+    bottom: AtomicUsize,
+}
+```
+
+为什么是 `AtomicUsize`？
+
+> 队列槽位 = 内存偏移
+> 原子操作 = 必须和地址宽度一致。
+
+---
+
+## 6.2 Future poll 计数 / Budget
+
+```rust
+struct Budget {
+    remaining: usize,
+}
+```
+
+为什么不是 u32？
+
+> 预算会参与数组索引
+> 会参与调度器循环
+> 会参与 batch size 计算。
+
+---
+
+## 6.3 HashMap / Vec 内部
+
+```rust
+struct RawTable<T> {
+    capacity: usize,
+    len: usize,
+    mask: usize,
+}
+```
+
+因为：
+
+> mask = capacity - 1
+> 全部参与指针寻址。
+
+---
+
+# 七、一句话把 usize 定死
+
+你现在可以用这一句话当 mental model：
+
+> **usize 不是“整数类型”，
+> 它是“地址空间整数类型”。**
+
+所以：
+
+| 用途       | 应不应该用 usize |
+| -------- | ----------- |
+| Vec 下标   | ✅           |
+| slice 边界 | ✅           |
+| 容量 / 长度  | ✅           |
+| 指针偏移     | ✅           |
+| 循环索引     | ✅           |
+| 网络协议字段   | ❌           |
+| 业务 ID    | ❌           |
+| 金额       | ❌           |
+| 文件大小     | ❌（除非只在内存里用） |
+
+---
+
+# 八、一个非常 Rust 的对比例子（你会立刻 get）
+
+```rust
+fn read(buf: &mut [u8], offset: u64, len: u64) {
+    let start = offset as usize;
+    let end = start + len as usize;
+
+    let slice = &buf[start..end];
+}
+```
+
+你一眼就能看出：
+
+> **这里发生了语义边界穿越**：
+>
+> “协议层数值” → “内存索引”。
+
+这一步必须显式 `as usize`，
+这正是 Rust 的设计目的。
+
+---
+
+# 九、如果你愿意，我可以下一步继续抠一个你一定感兴趣的点
+
+> **usize vs isize vs ptrdiff_t 的真正区别**
+>
+> 以及：
+> Tokio / Rayon / jemalloc 里
+> 为什么有的地方偏要用 isize？
+
+这一层正好对齐你最近在抠的
+**runtime / allocator / scheduler 的底层设计**。

@@ -22,5 +22,114 @@ if let Some(name) = thread.name() {
 `ToOwned` trait 定义在 Rust 标准库中，用于从借用类型创建拥有的版本。
 对于字符串切片 `&str`，`to_owned()` 会创建一个新的 `String` 实例。
 
-Copy vs Clone
 Convert::Into
+
+Copy vs Clone
+
+Send vs Sync
+
+`Send` 和 `Sync` 是 Rust 中两个重要的并发安全 trait，用于控制类型在多线程环境中的使用。
+
+### `Send` Trait
+
+**定义**: 一个类型如果实现了 `Send`，意味着它可以安全地在线程间传递所有权。
+
+**核心含义**:
+- 可以将该类型的值从一个线程移动到另一个线程
+- 所有权可以跨线程转移
+
+**示例**:
+```rust
+// 这些类型实现了 Send
+let x: i32 = 42;           // 基本类型
+let s: String = "hello".to_string(); // String
+let v: Vec<i32> = vec![1, 2, 3]; // Vec
+
+// 可以在线程间传递所有权
+std::thread::spawn(move || {
+    println!("{}", x);
+});
+```
+
+**不实现 Send 的类型**:
+```rust
+// Rc<T> 没有实现 Send，因为它使用引用计数
+// 在线程间传递可能导致数据竞争
+let rc = std::rc::Rc::new(42);
+// std::thread::spawn(move || { ... }); // 编译错误
+```
+
+### `Sync` Trait
+
+**定义**: 一个类型如果实现了 `Sync`，意味着它可以安全地被多个线程同时访问（通过共享引用）。
+
+**核心含义**:
+- 可以创建该类型的共享引用 `&T`，并在线程间传递
+- 允许多个线程同时读取该类型的值
+
+**示例**:
+```rust
+// 这些类型实现了 Sync
+let x: i32 = 42;           // 基本类型
+let s: &str = "hello";     // 字符串切片
+
+// 可以在线程间共享引用
+let x_ref = &x;
+std::thread::spawn(move || {
+    println!("{}", x_ref); // 安全地读取
+});
+```
+
+**不实现 Sync 的类型**:
+```rust
+// RefCell<T> 没有实现 Sync，因为它允许内部可变性
+// 多个线程同时访问可能导致数据竞争
+let cell = std::cell::RefCell::new(42);
+// let cell_ref = &cell;
+// std::thread::spawn(move || { ... }); // 编译错误
+```
+
+### 关键区别
+
+| 特性 | `Send` | `Sync` |
+|------|--------|--------|
+| **所有权转移** | ✓ 可以 | ✓ 可以 |
+| **共享引用** | ✗ 不一定 | ✓ 可以 |
+| **多线程读取** | ✗ 不一定 | ✓ 可以 |
+| **示例类型** | `Rc<T>` ❌, `Arc<T>` ✓ | `RefCell<T>` ❌, `RwLock<T>` ✓ |
+
+### 互相关系
+
+1. **`Sync` 依赖 `Send`**: 如果一个类型实现了 `Sync`，那么它通常也需要实现 `Send`
+2. **线程安全包装器**:
+   - `Arc<T>`: 原子引用计数，实现 `Send + Sync`
+   - `RwLock<T>`: 读写锁，实现 `Send + Sync`
+   - `Mutex<T>`: 互斥锁，实现 `Send + Sync`
+
+### 实际应用
+
+```rust
+// Send 类型：可以在 spawn 中 move
+fn use_send<T: Send>(value: T) {
+    std::thread::spawn(move || {
+        // 使用 value
+    });
+}
+
+// Sync 类型：可以在线程间共享 &T
+fn use_sync<T: Sync>(value: &T) {
+    std::thread::spawn(move || {
+        // 使用 value
+    });
+}
+
+// Send + Sync：最灵活的类型
+fn use_both<T: Send + Sync>(value: T) {
+    let ref_value = &value;
+    std::thread::spawn(move || {
+        // 可以使用 value 的所有权或引用
+    });
+}
+```
+
+理解这两个 trait 的区别对于编写安全的并发 Rust 代码至关重要。`Send` 关注所有权转移的安全性，而 `Sync` 关注共享访问的安全性。

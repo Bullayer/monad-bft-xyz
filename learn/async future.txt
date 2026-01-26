@@ -1587,3 +1587,573 @@ worker-3 pop injector
 
 这两条刚好对齐你最近在抠的：
 **高性能 gateway / 共识节点的 IO 并发模型。**
+
+-------------------------------------------------------------------------------
+
+基于代码中的这个`tokio::select!`块，我来解释一下`tokio::select!`宏和`biased`关键字的含义：
+
+## `tokio::select!` 宏的作用
+
+`tokio::select!` 是一个异步并发控制结构，允许同时等待多个异步操作，并在第一个完成的操作上执行相应的代码分支。它类似于其他语言中的`select`语句，但专门为Rust的异步运行时设计。
+
+在这个代码中，`select!` 同时监听三个异步操作：
+1. **SIGTERM信号** - 终止信号
+2. **SIGINT信号** - 中断信号（Ctrl+C）
+3. **executor.next()** - 执行器的事件流
+
+## `biased` 关键字的作用
+
+`biased` 关键字改变`select!`的调度行为：
+
+### 默认行为（无biased）
+- 所有分支平等竞争
+- 当多个分支同时就绪时，随机选择一个执行
+
+### 带biased的行为  
+- 分支按**编写顺序**具有优先级
+- 代码中**越靠前**的分支优先级越高
+- 当多个分支同时就绪时，总是选择优先级最高（最靠前）的那个
+
+## 在这段代码中的实际意义
+
+```rust
+tokio::select! {
+    biased; // events are in order of priority
+    
+    result = sigterm.recv() => { /* 处理SIGTERM */ }
+    result = sigint.recv() => { /* 处理SIGINT */ }  
+    event = executor.next() => { /* 处理executor事件 */ }
+}
+```
+
+这里使用`biased`确保：
+1. **SIGTERM**（终止信号）优先级最高 - 系统需要优雅关闭
+2. **SIGINT**（中断信号）其次 - 用户主动中断
+3. **executor事件**最后 - 正常业务逻辑
+
+这样可以保证当系统收到终止信号时，即使executor也有事件就绪，仍然会优先处理信号并退出程序，而不是继续处理业务事件。
+
+这种设计确保了系统的响应性和可靠性，信号处理始终优先于正常业务逻辑。
+
+--------------------------------------------------------------
+非常好，这一题**直接命中 Tokio 并发控制的核心机制**。
+而且你现在这个阶段，理解 `tokio::select!` 的正确心智模型，比会用更重要。
+
+我按你熟的那套层级来：
+
+```
+1) select! 到底是什么
+2) select! 的真实执行语义（源码级直觉）
+3) 和 join! / spawn 的本质区别
+4) 你一定会踩的 5 个坑
+5) 对齐你最近在抠的 runtime / gateway / 共识场景
+```
+
+---
+
+# 一、`tokio::select!` 到底是什么？
+
+一句话先定性：
+
+> `tokio::select!` =
+> **“在同一个 task 里并发 poll 多个 Future，
+> 谁先 Ready 就执行谁的分支。”**
+
+你可以把它理解成 async 世界的：
+
+```text
+epoll_wait(fd1, fd2, fd3)
+```
+
+但对象不是 fd，
+而是 **Future**。
+
+---
+
+## 最小例子
+
+```rust
+tokio::select! {
+    _ = a() => println!("a done"),
+    _ = b() => println!("b done"),
+}
+```
+
+语义：
+
+```
+同一轮 poll：
+  → poll a()
+  → poll b()
+  → 谁 Ready，走谁
+  → 另一个被 drop（默认）
+```
+
+---
+
+# 二、select! 的真实执行语义（非常关键）
+
+你现在已经懂：
+
+> `.await` = Future::poll 的语法糖
+> Tokio = 反复 poll
+
+`select!` 本质就是**一段手写 poll 逻辑**。
+
+---
+
+## 2.1 宏展开后的直觉版
+
+```rust
+loop {
+    match poll(a) {
+        Ready(x) => break branch_a(x),
+        Pending => {}
+    }
+
+    match poll(b) {
+        Ready(y) => break branch_b(y),
+        Pending => {}
+    }
+
+    // 都 Pending
+    return Pending;
+}
+```
+
+---
+
+## 2.2 关键语义点（非常容易误解）
+
+### ① 同一 task 里轮流 poll
+
+不是：
+
+> “a 和 b 在两个线程里并发执行”
+
+而是：
+
+> “当前 worker 线程
+> 轮流 poll a 和 b”
+
+---
+
+### ② 每一轮 poll 顺序是**随机打乱的**
+
+Tokio 会：
+
+```text
+每次 select! 进入时  
+随机打乱分支顺序
+```
+
+避免你写出隐式优先级 bug。
+
+---
+
+### ③ Ready 后：其它 Future 会被 drop
+
+```text
+a Ready
+→ 执行 a 分支
+→ b Future 被 drop（取消）
+```
+
+这是**极其重要的语义**。
+
+---
+
+# 三、和 join! / spawn 的本质区别
+
+这 3 个 API 经常被混用，但语义完全不同。
+
+---
+
+## 3.1 select!：竞争（race）
+
+```rust
+tokio::select! {
+    _ = a() => println!("a first"),
+    _ = b() => println!("b first"),
+}
+```
+
+语义：
+
+> 谁先完成用谁
+> 另一个直接取消。
+
+---
+
+## 3.2 join!：等待全部完成
+
+```rust
+let (x, y) = tokio::join!(a(), b());
+```
+
+语义：
+
+> 两个 Future 都要跑完
+> 都 Ready 了才返回。
+
+---
+
+## 3.3 spawn：并发任务
+
+```rust
+let h1 = tokio::spawn(a());
+let h2 = tokio::spawn(b());
+let r1 = h1.await;
+let r2 = h2.await;
+```
+
+语义：
+
+> 真正独立 task
+> 被调度器分别 poll。
+
+---
+
+# 四、select! 里最容易踩的 5 个坑
+
+这些坑，**你现在这个层级一定会遇到**。
+
+---
+
+## 4.1 分支 Future 每轮都会重建（非常致命）
+
+```rust
+loop {
+    tokio::select! {
+        _ = socket.read(&mut buf) => { ... }
+        _ = tokio::time::sleep(Duration::from_secs(1)) => { ... }
+    }
+}
+```
+
+**问题：**
+
+> 每轮 loop
+> sleep 都是新建的
+> 永远不会超时。
+
+---
+
+### ✅ 正确写法
+
+```rust
+let mut sleep = tokio::time::sleep(Duration::from_secs(1));
+
+loop {
+    tokio::select! {
+        _ = socket.read(&mut buf) => { ... }
+        _ = &mut sleep => {
+            sleep.reset(Instant::now() + Duration::from_secs(1));
+        }
+    }
+}
+```
+
+---
+
+## 4.2 被 drop 的 Future = 被取消
+
+```rust
+tokio::select! {
+    _ = long_task() => println!("done"),
+    _ = cancel_signal() => println!("cancel"),
+}
+```
+
+如果 cancel 赢了：
+
+> long_task Future 被 drop
+> 它内部的 IO / 锁 / channel
+> 都会被取消。
+
+**这在资源管理上非常关键。**
+
+---
+
+## 4.3 分支里 .await 会“嵌套阻塞”
+
+```rust
+tokio::select! {
+    _ = a() => {
+        b().await; // ⚠️
+    }
+}
+```
+
+语义：
+
+> 一旦进了 a 分支
+> select 结束
+> 后续 await 和 select 无关了。
+
+---
+
+## 4.4 select! 不是公平调度
+
+```rust
+tokio::select! {
+    _ = fast() => { ... }
+    _ = slow() => { ... }
+}
+```
+
+fast 如果几乎立刻 Ready：
+
+> slow 可能永远没机会跑完
+> （被反复取消）。
+
+---
+
+## 4.5 borrow checker + select!（你一定会撞）
+
+```rust
+tokio::select! {
+    _ = f(&mut x) => {}
+    _ = g(&mut x) => {} // ❌ 编译错误
+}
+```
+
+原因：
+
+> 两个分支
+> 同时借用了 `&mut x`。
+
+---
+
+# 五、select! 的 3 种高级用法（非常对你胃口）
+
+---
+
+## 5.1 带条件分支（biased select）
+
+```rust
+tokio::select! {
+    biased;
+
+    _ = high_priority() => {}
+    _ = low_priority() => {}
+}
+```
+
+语义：
+
+> 固定顺序 poll
+> 人工优先级。
+
+---
+
+## 5.2 default 分支（非阻塞 select）
+
+```rust
+tokio::select! {
+    _ = a() => {}
+    _ = b() => {}
+    else => {
+        println!("都没 ready");
+    }
+}
+```
+
+语义：
+
+> 所有分支 Pending
+> 立刻走 else。
+
+---
+
+## 5.3 与 channel 结合（最常用场景）
+
+```rust
+tokio::select! {
+    Some(msg) = rx.recv() => handle(msg),
+    _ = shutdown.recv() => break,
+}
+```
+
+这是：
+
+> 网关 / RPC server / 共识节点
+> 的主循环标配结构。
+
+---
+
+# 六、把 select! 精确对齐到 Tokio 调度器语义
+
+你前面已经抠透了：
+
+> Future = 状态机
+> Tokio = poll Future 的人
+
+现在对齐：
+
+---
+
+## 6.1 select! = 单 Future 内部多路 poll
+
+你可以把：
+
+```rust
+tokio::select! { ... }
+```
+
+理解成：
+
+```text
+一个 Future  
+里面手动 poll 了多个子 Future。
+```
+
+---
+
+## 6.2 所有分支共用同一个 waker
+
+这是关键：
+
+> 任意一个分支 Ready
+> 都会 wake 整个 task。
+
+---
+
+## 6.3 被 drop 的分支 = 协议级取消
+
+这就是：
+
+> Rust async 没有显式 cancel
+> 全靠 drop 语义。
+
+---
+
+# 七、对齐你最近抠的真实系统场景
+
+这一步你会非常有共鸣。
+
+---
+
+## 7.1 网关 / RPC Server 主循环
+
+```rust
+loop {
+    tokio::select! {
+        Some(req) = rx.recv() => handle(req),
+        _ = shutdown.recv() => break,
+        _ = heartbeat.tick() => send_ping(),
+    }
+}
+```
+
+语义：
+
+> 三路事件源
+> 谁先到处理谁。
+
+---
+
+## 7.2 共识节点的“多事件驱动”
+
+```rust
+tokio::select! {
+    Some(msg) = network_rx.recv() => handle_msg(msg),
+    Some(block) = proposal_rx.recv() => handle_block(block),
+    _ = view_timeout => start_new_view(),
+}
+```
+
+这正是：
+
+> 你前面在抠的 HotStuff / Monad
+> event-driven 主循环模型。
+
+---
+
+# 八、一句话把 select! 的本质钉死
+
+你现在可以用这一句当 mental model：
+
+> **`tokio::select!`
+> 不是并发执行器，
+> 而是：
+> “在一个 task 里手写了多路 Future::poll”。**
+
+---
+
+# 九、给你 4 个非常对你层级的小练习
+
+这 4 题做完，你对 select! 的直觉会非常稳。
+
+---
+
+## 练习 1：输出顺序
+
+```rust
+tokio::select! {
+    _ = async { 1 } => println!("A"),
+    _ = async { 2 } => println!("B"),
+}
+```
+
+**问题：**
+
+1. 一定只打印一个？
+2. A / B 哪个更可能？
+
+---
+
+## 练习 2：超时包装器
+
+```rust
+async fn with_timeout<F: Future>(f: F) -> Option<F::Output> {
+    // 用 select! 实现 1s 超时
+}
+```
+
+---
+
+## 练习 3：取消语义
+
+```rust
+tokio::select! {
+    _ = long_task() => println!("done"),
+    _ = tokio::time::sleep(Duration::from_millis(10)) => println!("timeout"),
+}
+```
+
+**问题：**
+
+1. long_task 还会继续跑吗？
+2. 如果它里面持有 MutexGuard 会怎样？
+
+---
+
+## 练习 4：biased 造成的 starvation
+
+```rust
+loop {
+    tokio::select! {
+        biased;
+        _ = fast() => println!("fast"),
+        _ = slow() => println!("slow"),
+    }
+}
+```
+
+**问题：**
+
+1. slow 可能永远打印不出来吗？
+2. 为什么？
+
+---
+
+如果你愿意，
+下一步我可以继续抠一层你一定感兴趣的：
+
+> **select! 在 Tokio 源码里是怎么实现的？**
+>
+> 宏展开 → Future 结构 → poll 顺序 → waker 注册 → drop 分支
+
+这一层会直接对齐你现在在抠的：
+**Tokio scheduler / Reactor / task 状态机设计**。

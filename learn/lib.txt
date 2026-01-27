@@ -28,7 +28,63 @@ fn test_option() {
 --------------------------------------------------
 
 Result
+
+--------------------------------------------------
+
 Iterator
+Rust 处理集合数据最核心、最高效的方式。
+
+## 三种核心迭代方式
+
+根据所有权的不同，集合通常提供三种迭代器：
+
+方法,         迭代器类型,          元素类型,           说明
+iter()       Iter<T>             &T                不可变引用。最常用，集合本身不可变。
+iter_mut()   IterMut<T>          &mut T            可变引用。允许你在迭代时修改元素。
+into_iter()  IntoIter<T>         T                 夺取所有权。迭代后原集合不可再用。
+
+## 迭代器的两类操作
+
+迭代器的精髓在于将复杂的逻辑链式化。
+
+### 适配器（Iterator Adapters）
+
+它们负责转换迭代器，但由于是惰性的，它们不会立即执行。
+
+    map(|x| x * 2)：转换每个元素。
+
+    filter(|x| x % 2 == 0)：过滤元素。
+
+    enumerate()：获取索引和值 (index, value)。
+
+    take(n) / skip(n)：获取或跳过前 n 个元素。
+
+    flatten()：摊平嵌套结构。
+
+### 消费者（Consumers）
+
+它们负责执行并产生结果，会触发流水线运转。
+
+    collect()：最强大的武器，将结果转换回集合（如 Vec, HashMap，甚至是 Result）。
+
+    sum() / product()：求和或求积。
+
+    for_each(|x| ...)：对每个元素执行操作。
+
+    find(|x| ...)：查找第一个匹配项，返回 Option。
+
+    fold(init, |acc, x| ...)：通过累加器进行归约（类似 JavaScript 的 reduce）。
+
+## 迭代器的核心优势
+
+性能：零成本抽象 (Zero-Cost Abstractions)
+Rust 编译器能对迭代器进行深度优化（如循环展开和消除边界检查）。
+
+冷知识： 在 Rust 中，使用迭代器通常比手写 for i in 0..len 循环更快，因为迭代器能向编译器保证不会越界。
+
+## 基础测试代码
+
+monad-bull/test/iterator_test.rs
 
 --------------------------------------------------
 
@@ -92,25 +148,25 @@ fn process_request(user_id: u32) {
     let _enter = span.enter();  // 进入跨度
 
     info!("开始处理请求");
-    
+
     // 嵌套跨度
     let validation_span = span!(Level::DEBUG, "validate_user");
     let _validation_enter = validation_span.enter();
-    
+
     debug!("验证用户权限");
     // ... 验证逻辑 ...
-    
+
     drop(_validation_enter);  // 退出验证跨度
-    
+
     // 继续处理
     let result = do_some_work();
-    
+
     info!(result = ?result, "请求处理完成");
 }
 
 fn main() {
     tracing_subscriber::fmt::init();
-    
+
     process_request(123);
 }
 ```
@@ -188,16 +244,16 @@ fn update_user(user_id: u32) {
 
 // 动态字段
 fn complex_operation() {
-    let span = span!(Level::INFO, "complex_op", 
+    let span = span!(Level::INFO, "complex_op",
         start_time = ?std::time::Instant::now(),
         items_count = 0
     );
-    
+
     let _enter = span.enter();
-    
+
     // 更新字段值
     span.record("items_count", &42);
-    
+
     info!("操作完成");
 }
 ```
@@ -238,7 +294,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 fn main() {
     // 从环境变量读取配置
     let filter = EnvFilter::from_default_env();
-    
+
     // 设置格式化器
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(filter)
@@ -246,7 +302,7 @@ fn main() {
         .with_thread_ids(true)  // 显示线程ID
         .with_thread_names(true)  // 显示线程名
         .finish();
-    
+
     tracing::subscriber::set_global_default(subscriber)
         .expect("设置全局订阅者失败");
 }
@@ -261,9 +317,9 @@ use tokio;
 #[instrument]
 async fn async_operation(user_id: u32) -> Result<(), Box<dyn std::error::Error>> {
     info!("开始异步操作");
-    
+
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    
+
     info!("异步操作完成");
     Ok(())
 }
@@ -271,7 +327,7 @@ async fn async_operation(user_id: u32) -> Result<(), Box<dyn std::error::Error>>
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    
+
     if let Err(e) = async_operation(42).await {
         error!(error = %e, "异步操作失败");
     }
@@ -486,7 +542,7 @@ struct Covariant<T> {
     _phantom: PhantomData<T>,
 }
 
-// 逆变 (contravariant) 
+// 逆变 (contravariant)
 struct Contravariant<T> {
     _phantom: PhantomData<fn(T)>,
 }
@@ -516,7 +572,7 @@ impl<T: serde::Serialize> Serializer<T> {
             _phantom: PhantomData,
         }
     }
-    
+
     fn serialize(&mut self, value: &T) -> Result<(), String> {
         // 序列化逻辑...
         Ok(())
@@ -541,7 +597,7 @@ impl<T> ConnectionPool<T> {
             _phantom: PhantomData,
         }
     }
-    
+
     fn get_connection(&self) -> Option<&T> {
         // 返回类型安全的连接...
         None
@@ -557,13 +613,13 @@ use std::marker::PhantomData;
 struct Container<T> {
     // 协变：可以从 &Container<&'a T> 转换为 &Container<&'b T> (如果 'a: 'b)
     covariant: PhantomData<T>,
-    
+
     // 逆变：用于函数参数类型
     contravariant: PhantomData<fn(T)>,
-    
+
     // 不变：最严格，T 必须完全相同
     invariant: PhantomData<fn(T) -> T>,
-    
+
     // 常量类型：不关心 T 的生命周期
     constant: PhantomData<&'static T>,
 }
@@ -630,6 +686,148 @@ struct RefWrapper<'a> {
 
 IndexMap
 SortedVectorMap
+
+----------------------------------------------------
+
 VecDeque
+一个双端队列，通过可增长环形缓冲区实现。
+
+## 1. 数据结构本质
+
+核心结构：一个连续的 Vec（缓冲区） + 两个指针（head/tail 或 front/back index）
+
+环形设计：当 tail 到达缓冲区末尾时，自动“绕回”头部（mod capacity）
+
+容量浪费：当前实现中，容量至少是元素个数 + 1（为了区分空队列和满队列），所以空 VecDeque 也会分配至少 1 个槽位
+
+扩容策略：类似 Vec，双倍增长，但因为环形，扩容时会把元素“理顺”（reallocate + copy）
+
+as_slices()：返回两个切片（front + back），元素可能不连续（wrapped 状态）
+
+一句话：它是“Vec + 环形偏移”的混合体，牺牲了少量连续性，换来了两端 O(1) 操作。
+
+## 2. 时间复杂度对比
+
+操作                  Vec<T>           VecDeque<T>           LinkedList<T>     备注
+--------------------- ---------------- --------------------- ----------------- -------------------------------
+push_back / pop_back  O(1) amortized   O(1) amortized        O(1)              VecDeque 和 Vec 几乎相同
+push_front            O(n)             O(1) amortized        O(1)              VecDeque 最大优势
+pop_front             O(n)             O(1) amortized        O(1)              -
+insert 中间           O(n)             O(n)                  O(1) 有迭代器     LinkedList 胜出
+remove 中间           O(n)             O(n)                  O(1) 有迭代器     -
+随机访问 [] / get     O(1)             O(1)                  O(n)              VecDeque 完胜 LinkedList
+内存局部性（cache）   极好             好（wrapped 时稍差）  差                Vec > VecDeque >> LinkedList
+迭代速度              最快             很快（两个 slice）    慢                -
+
+关键结论：
+
+需要频繁两端操作 → VecDeque > LinkedList > Vec
+需要频繁随机访问/迭代 → Vec > VecDeque >> LinkedList
+需要中间频繁插入/删除 → LinkedList（但实际很少用，因为 cache miss 严重）
+
+## 3. 常见真实使用场景
+
+消息队列 / 任务队列：生产者 push_back，消费者 pop_front（最经典用法）
+```
+use std::collections::VecDeque;
+
+fn main() {
+    let mut task_queue: VecDeque<String> = VecDeque::new();
+
+    // 模拟生产者添加任务
+    task_queue.push_back("Process user login".to_string());
+    task_queue.push_back("Send email notification".to_string());
+    task_queue.push_back("Update database cache".to_string());
+
+    println!("任务队列初始: {:?}", task_queue);
+
+    // 消费者处理任务（FIFO）
+    while let Some(task) = task_queue.pop_front() {
+        println!("正在执行: {}", task);
+        // 这里可以放实际处理逻辑
+    }
+
+    println!("所有任务完成，队列: {:?}", task_queue);
+}
+```
+滑动窗口 / 最近 N 条记录：push_back 新数据，pop_front 过期数据（日志、监控、历史价格）
+```
+use std::collections::VecDeque;
+
+fn main() {
+    let mut recent_logs: VecDeque<String> = VecDeque::with_capacity(5); // 预分配容量，避免频繁重分配
+
+    for i in 1..=10 {
+        let log = format!("Log entry #{}", i);
+        recent_logs.push_back(log);
+
+        // 超过窗口大小就移除最旧的
+        if recent_logs.len() > 5 {
+            if let Some(old) = recent_logs.pop_front() {
+                println!("移除过期日志: {}", old);
+            }
+        }
+
+        println!("当前最近日志（最多5条）: {:?}", recent_logs);
+    }
+}
+```
+BFS（广度优先搜索）：队列天然就是 VecDeque
+双端缓存 / LRU 变种：最近访问的移到一端，淘汰另一端
+```
+use std::collections::VecDeque;
+
+fn main() {
+    let mut recent_files: VecDeque<String> = VecDeque::new();
+    let max_size = 4;
+
+    let files_accessed = vec![
+        "fileA.txt", "fileB.txt", "fileC.txt",
+        "fileA.txt",  // 再次访问 → 移到尾部
+        "fileD.txt", "fileE.txt",
+    ];
+
+    for file in files_accessed {
+        // 如果已存在，先移除旧位置
+        recent_files.retain(|f| f != file);
+
+        recent_files.push_back(file.to_string());
+
+        // 超过大小移除最旧的（头部）
+        if recent_files.len() > max_size {
+            if let Some(removed) = recent_files.pop_front() {
+                println!("淘汰最旧文件: {}", removed);
+            }
+        }
+
+        println!("当前最近文件: {:?}", recent_files);
+    }
+}
+```
+输入缓冲区：网络/文件/终端读取时，先读到缓冲区，处理时可能从头消费
+zstd / 压缩算法缓冲：ruzstd 等 crate 改用 VecDeque 后性能提升（避免频繁 drain 前部）
+游戏中的命令队列：输入缓冲、回放系统
+
+## 4. 优缺点一览
+
+### 优点：
+
+  两端 O(1) amortized 操作
+  随机访问 O(1)
+  内存连续性好（大部分时间）
+  迭代器友好（支持 drain、range 等）
+
+### 缺点：
+
+  元素不总是连续（as_slices 返回两个 slice）
+  扩容时拷贝开销（和 Vec 类似，但 wrapped 状态更复杂）
+  比纯 Vec 多一点指针计算开销（head/tail 偏移）
+  空 deque 也至少分配 1 个元素（当前实现）
+
+## 5. 基础测试代码
+
+monad-bull/tests/vec_deque_test.rs
+
+----------------------------------------------------
 
 Atomic::Ordering

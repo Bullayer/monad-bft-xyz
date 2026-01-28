@@ -1,0 +1,644 @@
+# BlockTree 完整指南
+
+## 概述
+
+`monad-blocktree` 是 Monad BFT 共识算法中管理区块树的数据结构模块，负责维护已提交和待提交区块的树形结构。
+
+## BlockTree 结构
+
+```rust
+BlockTree {
+    /// 已最终提交的最后一个块（root）
+    /// 所有 tree 中的块都是 root 的后代
+    root: Root {
+        info: RootInfo {
+            block_id: BlockId,
+            seq_num: SeqNum,
+            round: Round,
+            epoch: Epoch,
+            timestamp_ns: u128,
+        },
+        children_blocks: Vec<BlockId>,  // root 的直接子块列表
+    },
+    
+    /// 未提交的块（pending blocks）
+    /// 第一层块的 parent_id == root.block_id
+    tree: Tree {
+        /// 块索引：BlockId -> BlockTreeEntry
+        tree: HashMap<BlockId, BlockTreeEntry> {
+            // 每个 entry 包含：
+            // - validated_block: BPT::ValidatedBlock
+            //   └─ ConsensusFullBlock {
+            //        header: ConsensusBlockHeader {
+            //            block_round, epoch, seq_num, timestamp_ns,
+            //            qc, author, round_signature,
+            //            delayed_execution_results,
+            //            execution_inputs,
+            //            block_body_id,  // 指向 payload 的 ID
+            //            base_fee, base_fee_trend, base_fee_moment,
+            //        },
+            //        body: ConsensusBlockBody<EPT> {
+            //            execution_body: EPT::BlockBody,  // 实际的交易数据
+            //        }
+            //      }
+            // - is_coherent: bool  // 是否具备执行一致性
+            // - children_blocks: Vec<BlockId>  // 子块列表
+        },
+        /// Payload 索引：ConsensusBlockBodyId -> BlockBodyIndex
+        /// 支持多个块共享同一个 payload（重提案场景）
+        payloads: HashMap<ConsensusBlockBodyId, BlockBodyIndex<EPT>> {
+            // 每个 BlockBodyIndex 包含：
+            // - body: ConsensusBlockBody<EPT>  // 实际的 payload 数据
+            // - active_blocks: HashSet<BlockId>  // 引用这个 payload 的所有块
+            // - 当 active_blocks 为空时，payload 被垃圾回收
+        },
+    },
+}
+```
+
+## 初始化流程
+
+### 1. 节点启动阶段
+
+节点启动时，`MonadState` 的 `consensus` 字段处于 `ConsensusMode::Sync`（同步模式），此时还没有 `BlockTree`。
+
+### 2. 状态同步完成
+
+当收到 `StateSyncEvent::DoneSync` 事件时，会调用 `maybe_start_consensus()`。
+
+### 3. maybe_start_consensus 中的完整初始化流程
+
+**代码位置**: `monad-state/src/lib.rs`
+
+#### 步骤 1: 检查是否还需要区块同步
+
+如果还需要同步区块，请求区块同步并返回。
+
+```rust
+if let Some(block_range) = block_buffer.needs_blocksync() {
+    return self.update(MonadEvent::BlockSyncEvent(...));
+}
+```
+
+#### 步骤 2: 获取根区块信息（从 BlockBuffer）
+
+```rust
+let root_info = block_buffer.root_info()
+    .expect("blocksync done, root block should be known");
+```
+
+#### 步骤 3: 检查数据库同步状态
+
+数据库同步完成后，才能开始共识。
+
+```rust
+assert_eq!(db_status, &DbSyncStatus::Done);
+```
+
+#### 步骤 4: 准备初始化前的数据
+
+```rust
+let delay = self.consensus_config.execution_delay; // 默认是 3
+// 验证最后 2*delay（6个） 个已提交区块
+let last_two_delay_committed_blocks: Vec<_> = root_parent_chain
+    .iter()
+    .map(|full_block| {
+        self.block_validator.validate(...)
+            .expect("majority committed invalid block")
+    })
+    .take(delay.0.saturating_mul(2) as usize)
+    .rev()
+    .collect();
+
+// 重置 block_policy 和 txpool（用上面那 6 个区块）
+self.block_policy.reset(
+    last_two_delay_committed_blocks.iter().collect(),
+    &self.consensus_config.chain_config,
+);
+
+// 初始化交易池
+commands.push(Command::TxPoolCommand(TxPoolCommand::Reset {
+    last_delay_committed_blocks: last_two_delay_committed_blocks.clone(),
+}));
+
+// 提交这些区块到账本（Command::LedgerCommand）
+for block in last_two_delay_committed_blocks {
+    commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+        OptimisticCommit::Proposed(block.deref().to_owned()),
+    )));
+    commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+        OptimisticCommit::Finalized(block.deref().to_owned()),
+    )));
+    commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+        block.get_seq_num(),
+    )));
+}
+```
+
+#### 步骤 5: 获取缓存的提案（在同步期间收到的提案）
+
+```rust
+let cached_proposals = block_buffer.proposals().cloned().collect_vec();
+```
+
+#### 步骤 6: 创建 ConsensusState，此时 BlockTree 被初始化
+
+```rust
+let consensus = ConsensusState::new(
+    &self.epoch_manager,
+    &self.consensus_config,
+    root_info,  // BlockTree 的根节点信息（来自 BlockBuffer）
+    high_certificate.clone(),
+);
+```
+
+在 `ConsensusState::new()` 中，`BlockTree` 被创建：
+
+```rust
+// 代码位置: monad-consensus-state/src/lib.r277
+pub fn new(
+    epoch_manager: &EpochManager,
+    config: &ConsensusConfig<CCT, CRT>,
+    root: RootInfo,  // 从 block_buffer.root_info() 获取的根区块信息
+    high_certificate: RoundCertificate<ST, SCT, EPT>,
+) -> Self {
+    let pacemaker = Pacemaker::new(...);
+    ConsensusState {
+        pending_block_tree: BlockTree::new(root),  // ← BlockTree 在这里初始化
+        // ...
+    }
+}
+```
+
+#### 步骤 7: 切换到共识 Live 模式
+
+```rust
+self.consensus = ConsensusMode::Live(consensus);
+```
+
+#### 步骤 8: 初始化后的操作
+
+- 启动执行引擎
+- 设置投票和超时定时器
+- 处理缓存的提案（在同步期间收到的提案现在可以处理了）
+- 请求缺失的祖先区块（从 high_qc 开始）
+
+```rust
+// 启动执行引擎
+commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
+
+// 设置投票和超时定时器
+commands.extend(self.update(MonadEvent::ConsensusEvent(
+    ConsensusEvent::SendVote(current_round)
+)));
+commands.extend(self.update(MonadEvent::ConsensusEvent(
+    ConsensusEvent::Timeout(current_round)
+)));
+
+// 处理缓存的提案
+for (sender, proposal) in cached_proposals {
+    let mut consensus = ConsensusChildState::new(self);
+    commands.extend(consensus.handle_validated_proposal(sender, proposal)...);
+}
+
+// 请求缺失的祖先区块（从 high_qc 开始）
+let blocksync_cmds = {
+    let ConsensusMode::Live(consensus) = &mut self.consensus;
+    consensus.request_blocks_if_missing_ancestor()
+};
+```
+
+每次请求缺失的祖先区块的时候都会进入到 `tree.maybe_fill_path_to_root` 路径填充，检查从 high_qc 到根是否有缺失的区块，返回缺失块的 range。
+
+## try_add_and_commit_blocktree
+
+### 概述
+
+在这个过程中有两种收到区块的可能性：
+
+1. **收到提案 (`handle_proposal_message`)**
+   - **来源**: 当前共识轮次的正常流程，leader 发出的提案
+   - **行为**: 如果 `proposal_round == pacemaker.get_current_round()`，会尝试投票（`try_vote`）
+   - **目的**: 推进当前轮次的共识
+
+2. **收到 BlockSync 响应 (`handle_block_sync`)**
+   - **来源**: 之前请求的缺失祖先块（历史块）
+   - **行为**: 只加入 BlockTree，不投票。补齐后可能让之前不 coherent 的块变为 coherent（因为祖先链完整了）。可能间接触发提交（因为 coherency 更新让 QC 变为可提交）
+   - **目的**: 补齐缺失信息，修复树结构
+
+### BlockSync 的触发场景
+
+BlockSync 的触发场景（方法都是上面提到过的 `request_blocks_if_missing_ancestor`）：
+
+- **场景 1**: 网络乱序，收到子块但没收到父块
+  - 收到 block N+2 的提案
+  - 但 block N+1 还没收到
+  - 从 block N+2 向上追溯，发现 block N+1 不在 tree 中
+  - 触发 BlockSync，请求 block N+1
+
+- **场景 2**: 收到 high_qc，但 QC 指向的块不在 tree 中
+  - 收到一个 QC，指向 block N+1
+  - 但 block N+1 本身不在 tree 中
+  - 触发 BlockSync，请求 block N+1
+
+### 函数签名
+
+```rust
+fn try_add_and_commit_blocktree(
+    &mut self,
+    block: BPT::ValidatedBlock,
+    try_vote: Option<(
+        Round,
+        Option<TimeoutCertificate<ST, SCT, EPT>>,
+        ConsensusTip<ST, SCT, EPT>,
+    )>,
+) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
+```
+
+**输入参数**:
+- `block`: 已通过验证的区块，都会通过 `block-validator` 的校验后
+- `try_vote`:
+  - `Some((proposal_round, last_round_tc, tip))`: 来自提案路径（`handle_proposal_message`），包含提案轮次、TC、tip 信息
+  - `None`: 来自 BlockSync 路径（`handle_block_sync`），不尝试投票
+
+### 详细流程
+
+#### 1. 将区块加入 BlockTree
+
+```rust
+self.consensus.pending_block_tree.add(block.clone());
+```
+
+**行为**:
+- 基本校验：区块不存在于树中，且区块轮次大于根节点轮次
+- 将区块插入 BlockTree 的 `tree` map
+- 创建 `BlockTreeEntry`（`is_coherent = false`）
+- 更新父块的 `children_blocks`
+- 如果父块是 root，更新 `root.children_blocks`
+- 存储/引用 payload 到 `payloads` map
+
+**关键点**:
+- 区块添加时默认 `is_coherent = false`
+- 后续需要通过 `try_update_coherency` 更新
+
+#### 2. 一致性校验更新
+
+```rust
+cmds.extend(self.try_update_coherency(block.get_id()));
+```
+
+**流程** 
+
+1. **查找路径到根**
+   - 从指定区块向上遍历到根节点
+   - 构建从根到该区块的完整路径
+
+2. **找到第一个不一致的区块**
+   - 在路径上找到第一个 `is_coherent = false` 的区块（可能是自身或父区块）
+
+3. **执行一致性检查** (`monad-eth-block-policy/check_coherency.rs`)
+   
+   根据不同的校验失败返回不同的错误：
+   - 这块是不是紧跟父块的下一个 seq_num？
+   - 时间戳是不是相对父块严格递增？
+   - 这块声明的"延迟执行结果"是否与本地已知执行结果一致？
+     - 共识层在创建区块 N 时，需要引用区块 N-3 的执行结果，用于 coherency 检查
+     - 区块 N 的 header 中有 `delayed_execution_results`（来自发送方）
+     - 本地调用 `get_expected_execution_results()` 从 state_backend 读取
+     - 如果本地执行层还没执行完区块 N-3，`state_backend.get_execution_result()` 会返回 `NotAvailableYet`
+     - coherency 检查失败，区块暂时不能标记为 coherent
+     - 当 leader 创建区块 N 时，如果区块 N - 3 还没执行完（`monad-state-consensus/src/libss:try_propose:
+       - 不等待：不会阻塞等待执行完成
+       - 跳过提案：直接 return cmds，不创建 proposal
+       - 记录指标：增加 `rx_execution_lagging` 计数
+       - 记录日志：输出 "no eth_header found, can't propose"
+   - `base_fee` / `base_fee_trend` / `base_fee_moment` 是否与本地按规则计算一致？
+   - 在执行延迟存在时，用已知状态推导出来的 nonce / balance / reserve balance 等是否足以让本块内交易序列自洽？
+   - 系统交易输入是否满足规则？
+   - EIP-7702 授权列表对 nonce 的影响是否按规范更新？
+
+4. **递归更新子区块**
+   - 如果区块通过一致性检查，标记为 `is_coherent = true`
+   - 递归检查该区块的所有子区块
+
+#### 3. 对每个新变为 coherent 的块下发 Proposed 提交
+
+```rust
+for newly_coherent_block in ... {
+    cmds.push(ConsensusCommand::CommitBlocks(
+        OptimisticPolicyCommit::Proposed(newly_coherent_block.to_owned()),
+    ));
+}
+```
+
+**说明**:
+- **乐观提交（Optimistic Commit）**: 一旦块在本地看来已经执行/依赖齐备（coherent），就可以先向执行/存储层提交为 `Proposed` 状态
+- 这允许执行层提前开始处理，而不需要等待最终提交（Finalized）
+- 如果后续发现块有问题，可以回滚 Proposed 状态
+- 此时块还没有最终提交（Finalized），可能因为共识规则（如 QC 未满足）还不能最终确定
+- 但执行层可以乐观地认为这个块会被最终提交，提前处理
+
+#### 4. 查找可提交的 QC，尝试最终提交
+
+```rust
+let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
+if let Some(qc) = high_commit_qc {
+    cmds.extend(self.try_commit(&qc));
+}
+```
+
+**`get_high_committable_qc` 流程**
+
+1. **BFS 遍历 BlockTree**
+   - 从 root 的子块开始，广度优先遍历整个树
+
+2. **已存在更高轮次的 QC，跳过**
+   ```rust
+   if high_commit_qc
+       .as_ref()
+       .is_some_and(|high_commit_qc| high_commit_qc.get_round() >= qc.get_round())
+   {
+       continue;
+   }
+   ```
+
+3. **对每个块的 QC 进行检查，否则跳过**
+   - 如果 QC 指向的父块不存在，跳过
+   - 通过 `get_committable_id` 验证 QC 是否满足连续轮次条件
+
+4. **`get_committable_id` 验证**
+
+   ```rust
+   pub fn get_committable_id<ST, EPT>(
+       &self,  // 当前要检查的 QC（例如 QC_B）
+       qc_parent_block: &ConsensusBlockHeader<ST, SCT, EPT>,  // QC 指向的块（例如 Block B）
+   ) -> Option<BlockId>
+   
+   // 断言：确保 QC 指向的块就是传入的 qc_parent_block
+   assert_eq!(self.info.id, qc_parent_block.get_id());
+   
+   // 关键检查：当前 QC 的 round 是否等于父块 QC 的 round + 1
+   // 注意：qc_parent_block.qc 是父块的 QC，不是这个块自己的 QC
+   if self.infosound == qc_parent_block.qc.infosound + Round(1) {
+       // ✅ 连续轮次！返回可以提交的块 ID（父块的父块）
+       Some(qc_parent_block.get_parent_id())
+   } else {
+       // ❌ 不连续，不能提交
+       None
+   }
+   ```
+
+   **示例**:
+   - `self` 是当前要检查的 QC（例如 `QC_B`，round=6，指向 Block B）
+   - `qc_parent_block` 是 QC 指向的块（例如 Block B）
+   - `qc_parent_block.qc` 是 Block B 的 `qc` 字段，存储的是父块 Block A 的 QC（`QC_A`，round=5）
+   - 检查：`QC_Bsound(6) == QC_Asound(5) + 1` ✅ 连续！
+   - 返回：`Block B.get_parent_id()` = `Block A` 的 ID
+
+5. **committable block 是否 coherent，否则跳过**
+   ```rust
+   if !self.is_coherent(&committable_block_id) {
+       continue;
+   }
+   ```
+
+6. **记录为最高可提交 QC**
+   ```rust
+   high_commit_qc = Some(qc.clone());
+   ```
+
+#### 5. 当检测到可提交的 QC 时，区块提交 `try_commit`
+
+**代码位置**: `monad-consensus-state/src/lib.rs`
+
+**流程**:
+
+1. **获取 QC 指向的区块**
+   ```rust
+   let Some(qc_parent) = self.consensus.pending_block_tree.get_block(&qc.get_block_id()) else {
+       return Vec::new();
+   };
+   ```
+
+2. **计算可提交的区块ID**
+   ```rust
+   let Some(committable_block_id) = qc.get_committable_id(qc_parent.header()) else {
+       return cmds; // qc is not committable (not consecutive rounds)
+   };
+   ```
+
+3. **检查可提交区块是否一致**
+   ```rust
+   if !self.consensus.pending_block_tree.is_coherent(&committable_block_id) {
+       return Vec::new(); // 执行滞后，稍后重试
+   }
+   ```
+
+4. **修剪区块树并获取要提交的区块**
+   ```rust
+   let blocks_to_commit = self.consensus.pending_block_tree.prune(&committable_block_id);
+   ```
+
+   **`prune` 函数签名**
+   ```rust
+   pub fn prune(&mut self, new_root: &BlockId) -> Vec<BPT::ValidatedBlock>
+   ```
+
+   **流程**:
+   - 1. 断言：目标区块必须是一致的 `is_coherent`
+   - 2. 从新根向上遍历到旧根，收集路径上的所有区块（按轮次递增）
+   - 3. 移除所有不属于新根子树的区块（轮次低于新根轮次的区块）
+   - 4. 更新根节点为新根
+   - 5. 返回要提交的区块列表（已反转，按轮次递增）
+
+5. **为每个区块生成提交命令**
+   ```rust
+   for block in blocks_to_commit.iter() {
+       cmds.push(ConsensusCommand::CommitBlocks(
+           OptimisticPolicyCommit::Finalized(block.to_owned())
+       ));
+   }
+   ```
+
+#### 6. 如果是接收到区块，开始投票 (`try_vote`)
+
+**进入条件**: 只有当 `try_vote` 存在且它携带的 `proposal_round == self.consensus.pacemaker.get_current_round()` 时
+
+- 如果 `proposal_round` 恰好是当前轮：说明我们"现在就该对这一轮的提案做出投票决策"
+- 如果 `proposal_round` 不是当前轮：可能是乱序提案、重提案或已经换轮，不在这里投票
+
+**投票流程**:
+
+1. **父块信息必须能从本地树/QC 查到**
+   - 取父时间戳与父 `block_round`，否则直接丢弃投票（避免对缺信息的提案投票）
+
+2. **时间戳校验**
+   - 用 `block_timestamp.valid_block_timestamp(...)` 校验提案时间戳是否满足 pace 等约束
+   - 失败则不投票并记录指标
+
+3. **必须 coherent 才投票**
+   - 如果 `pending_block_tree.is_coherent(tip_block_id)` 为 false，明确 "not voting on proposal, is not coherent"
+
+4. **safety 规则**
+   - `safety.is_safe_to_vote(...)` 保障"同轮不重复投/不对冲突 TC 做 NE"等
+
+#### 7. 接受新区块是一个推进系统前沿的时机
+
+无论是 BlockSync 还是收到提案，都会尝试提议区块 `try_propose`:
+
+- 检查当前节点是否是 leader
+- 检查是否满足提案条件
+- 如果满足，创建提案命令
+
+#### 8. Statesync 防护 (`maybe_statesync`)
+
+```rust
+let Some(high_qc_seq_num) = self
+    .consensus
+    .pending_block_tree
+    .get_seq_num_of_qc(self.consensus.pacemaker.high_certificate().qc())
+else {
+    return Vec::new();
+};
+
+if self.consensus.pending_block_tree.get_root_seq_num()
+    + self.config.live_to_statesync_threshold
+    > high_qc_seq_num
+{
+    Vec::new()
+} else {
+    panic!("high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}", high_qc_seq_num, self.consensus.pending_block_tree.get_root_seq_num());
+}
+```
+
+- **保护性检查**: 当节点落后太多时，需要走更重的恢复流程（statesync），阈值：`live_to_statesync_threshold`
+- 当前实现是直接 panic，提示重启并 statesync
+
+#### 9. 缺祖先补块请求 (`request_blocks_if_missing_ancestor`)
+
+- 检查是否有缺失的祖先块
+- 如果有，发起 BlockSync 请求
+
+**意义**: 在加入一个块后，如果它的祖先链并不完整（例如先收到了较新轮次的块/QC），系统会主动发起补块请求，以便：
+- 后续 coherency 能被更新为 true
+- commit 条件能被满足（例如 QC 的可提交路径需要祖先存在）
+
+这一步与 `handle_block_sync` 路径共同构成一个闭环：
+- 加块时发现缺祖先 → 请求 blocksync
+- blocksync 回来后逐个验证并 `try_add_and_commit_blocktree` → 可能触发 coherency/commit 继续推进
+
+### 总结
+
+把上面的步骤合起来看，`try_add_and_commit_blocktree` 是推进共识状态机的同步点：
+
+- **输入**: 一个已验证的新块（可能来自提案或补块）
+- **输出**: 一组命令，尽可能把系统从"知道这个块"推进到"能提交/能投票/能提案/能补齐缺失"的更前沿状态
+
+它把"块树维护、执行一致性、提交策略、投票策略、提案策略、同步保护、缺块修复"这些原本分散的动作，以一个稳定的顺序组合起来。
+
+## BlockTree 参与的流程
+
+```
+├─ [节点启动]
+│  └─ MonadState 创建，consensus = ConsensusMode::Sync（同步模式）
+│     └─ 此时还没有 BlockTree
+│
+├─ [状态同步过程]
+│  ├─ 接收区块同步事件
+│  ├─ 处理 StateSyncEvent
+│  └─ 等待 db_status == Done
+│
+├─ [DoneSync 事件]
+│  └─ maybe_start_consensus() 被调用
+│     ├─ 检查同步状态（db_status == Done）
+│     ├─ 获取 root_info 从 block_buffer
+│     └─ ConsensusState::new(root_info, ...)  ← BlockTree 在这里初始化
+│        └─ BlockTree::new(root)  ← 根节点 = 同步完成后的最后一个已提交区块
+│     └─ consensus = ConsensusMode::Live(consensus)  ← 切换到活跃模式
+│
+├─ [收到提案消息]
+│  ├─ 验证提案有效性
+│  ├─ 验证区块
+│  └─ try_add_and_commit_blocktree()
+│     ├─ blocktree.add(block)          
+│     ├─ try_update_coherency()        
+│     │  └─ blocktree.try_update_coherency()
+│     │     ├─ 查找路径到根
+│     │     ├─ 找到第一个不一致的区块
+│     │     ├─ 执行一致性检查
+│     │     └─ 递归更新子区块
+│     │        └─ get_high_committable_qc -> if(high_committable_qc) try_commit
+│     ├─ try_vote() (如果是当前轮次)   
+│     │  └─ blocktree.is_coherent()
+│     │  └─ blocktree.get_timestamp_of_qc()
+│     │  └─ blocktree.get_block_round_of_qc()
+│     ├─ try_propose()
+│     └─ request_blocks_if_missing_ancestor()
+│        └─ blocktree.maybe_fill_path_to_root()
+│
+├─ [处理 QC]
+│  └─ process_qc() 
+│     ├─ try_commit()                  
+│     │  ├─ blocktree.get_block()
+│     │  ├─ blocktree.is_coherent()
+│     │  └─ blocktree.prune()         
+│     │     ├─ 从新根向上遍历到旧根
+│     │     ├─ 收集要提交的区块
+│     │     ├─ 移除不属于新根子树的区块
+│     │     └─ 更新根节点
+│     └─ try_propose()
+│
+├─ [提出提案]
+│  └─ try_propose()
+│     ├─ blocktree.is_coherent()
+│     └─ blocktree.get_blocks_on_path_from_root()
+│
+└─ [区块提交完成]
+   └─ BlockTree 根节点更新为新提交的区块
+```
+
+**处理 QC 的触发时机**:
+- 处理提案消息时 (`handle_proposal_message`)
+- 处理投票消息时 (`handle_vote_message`)
+- 处理超时消息时 (`handle_timeout_message`)
+- 处理 AdvanceRound 消息时 (`handle_advance_round_message`)
+
+## BlockTree 的作用总结
+
+### 1. 区块树管理
+
+- **维护树形结构**:
+  - `root`: 最后一个已提交的区块（根节点）
+  - `tree`: 所有未提交的区块，可能形成多个分支（forks）
+- **支持区块的添加、查询、删除**
+
+### 2. 一致性检查（Coherency Checking）
+
+- 检查区块是否有到根节点的有效路径
+- 验证区块是否为链的有效扩展
+- 只有一致的区块才能被投票和提交
+- 支持延迟检查：区块可乱序到达，父区块未到时可先添加
+
+### 3. 区块提交与修剪
+
+- `prune()`: 提交区块时修剪树，移除不属于新根子树的区块
+- 返回从旧根到新根路径上的所有区块（按轮次排序）
+- 自动清理不再被引用的区块体（payload）
+
+### 4. QC（Quorum Certificate）管理
+
+- `get_high_committable_qc()`: 查找可提交的最高 QC
+- `maybe_fill_path_to_root()`: 确定需要请求哪些区块来填充路径
+
+### 5. 路径查询
+
+- 获取从根到指定区块的完整路径
+- 支持父区块链查询
+- 支持区块信息查询（区块、区块体、序列号、时间戳等）
+
+## 设计特点
+
+- **根节点与树分离**: 已提交区块与待提交区块清晰区分
+- **支持多分支**: 处理网络延迟和恶意节点产生的分叉
+- **Payload 共享**: 多个区块可共享同一区块体，通过引用计数管理内存
+- **延迟一致性检查**: 区块添加时默认为不一致，满足条件后再标记为一致

@@ -686,6 +686,66 @@ struct RefWrapper<'a> {
 
 IndexMap
 
+`indexmap` crate 提供的 IndexMap<K, V> 是目前 Rust 生态中最常用的 “保持插入顺序的有序哈希表” 实现。
+
+它结合了 HashMap 的快速查找 + 插入顺序的稳定迭代，是很多场景下 `HashMap` 和 `BTreeMap` 的最佳替代品。
+
+## 一、核心特性
+
+- 插入顺序迭代：迭代顺序 == 插入顺序（只要不调用会打乱顺序的方法）
+- 通过索引访问：支持 `get_index(usize)`、`swap_remove_index(usize)` 等按位置操作
+- 键独立于哈希值：不像标准 HashMap 那样迭代顺序受哈希影响
+- 内部实现：`hashbrown`（跟 std HashMap 同源） + 独立的 `Vec` 存储键值对顺序
+
+## 二、操作复杂度一览
+
+| 操作               | 时间复杂度          | 说明                                   |
+|--------------------|---------------------|--------------------------------------|
+| get / contains_key | 平均 O(1)           | 哈希查找                               |
+| insert             | 平均 O(1) amortized | 可能扩容                               |
+| remove             | 平均 O(1)           | 默认使用 swap_remove（不保序）           |
+| shift_remove       | O(n)                | 保序删除（较慢）                        |
+| iter / for循环     | O(n)                | 非常快，连续内存                         |
+| get_index(n)       | O(1)                | 按插入顺序第 n 个元素                   |
+| swap_remove_index(n) | O(1)              | 按索引删除并返回（不保后续顺序）           |
+| 内存占用           | 略高于 HashMap      | 多了一份顺序索引                          |
+
+## 三、与常见 Map 对比
+
+| 特性                  | IndexMap              | HashMap               | BTreeMap              | SortedVectorMap       |
+|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|
+| 查找速度              | 平均 O(1)             | 平均 O(1)             | O(log n)              | O(log n)              |
+| 插入速度              | 平均 O(1)             | 平均 O(1)             | O(log n)              | O(n)                  |
+| 迭代顺序              | 插入顺序              | 无序（哈希依赖）      | 按键排序              | 按键排序              |
+| 保序 remove           | 需 shift_remove (慢)  | 无序                  | 天然保序              | 天然保序              |
+| 按索引访问            | 支持                  | 不支持                | 不支持                | 支持（但慢）          |
+| 内存局部性 / cache    | ★★★★☆                | ★★★☆☆                | ★★★☆☆                | ★★★★★                |
+| 小数据性能            | ★★★★★                | ★★★★☆                | ★★★★☆                | ★★★★★                |
+| 大数据性能            | ★★★★☆                | ★★★★★                | ★★★★☆                | ★★☆☆☆                |
+| 典型场景              | 配置、JSON、缓存、UI状态 | 通用纯键值            | 需要按键排序/范围查询 | 极小 & 读远多于写     |
+
+- monad-eth-txpool/src/pool/tracked.mod.rs:48 - 61：
+    pub struct TrackedTxMap<ST, SCT, SBT, CCT, CRT>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        SBT: StateBackend<ST, SCT>,
+    {
+
+        官方注释:
+        // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
+        // evict expired txs through the entry API.
+
+        // 通过使用 IndexMap，我们能够在拥有类似 Vec 的迭代性能的同时，
+        // 还能利用 entry API 来逐出（evict）那些已经过期的交易（txs）。
+        txs: IndexMap<Address, TrackedTxList>,
+        priority: PriorityMap,
+        limits: TrackedTxLimits,
+
+        _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
+    }
+    ...
+
 ----------------------------------------------------
 
 SortedVectorMap

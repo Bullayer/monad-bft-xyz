@@ -5074,6 +5074,7 @@ dependencies = [
  "monad-ledger",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-pprof",
  "monad-raptorcast",
  "monad-router-multi",
  "monad-secp",

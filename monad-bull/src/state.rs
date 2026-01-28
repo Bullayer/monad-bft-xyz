@@ -62,11 +62,11 @@ pub struct NodeState {
     pub mempool_ipc_path: PathBuf,
     pub control_panel_ipc_path: PathBuf,
     pub statesync_ipc_path: PathBuf,
-    pub statesync_sq_thread_cpu: Option<u32>,
+    // pub statesync_sq_thread_cpu: Option<u32>,
     // pub triedb_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
-    // pub pprof: String,
+    pub pprof: Option<String>,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     // #[allow(unused)]
@@ -88,11 +88,11 @@ impl NodeState {
             // triedb_path,
             control_panel_ipc_path,
             statesync_ipc_path,
-            statesync_sq_thread_cpu,
+            // statesync_sq_thread_cpu,
             keystore_password,
             otel_endpoint,
             record_metrics_interval_seconds,
-            // pprof,
+            pprof,
             // manytrace_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
@@ -193,10 +193,10 @@ impl NodeState {
             mempool_ipc_path,
             control_panel_ipc_path,
             statesync_ipc_path,
-            statesync_sq_thread_cpu,
+            // statesync_sq_thread_cpu,
 
             otel_endpoint_interval,
-            // pprof,
+            pprof,
             reload_handle,
             // manytrace_agent: agent,
         })

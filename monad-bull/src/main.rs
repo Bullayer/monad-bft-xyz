@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
@@ -9,7 +9,7 @@ use std::{
 
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig}};
+use monad_consensus_types::{metrics::Metrics, validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig}};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -19,7 +19,7 @@ use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_executor::{Executor};
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
@@ -30,6 +30,7 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
+use monad_pprof::start_pprof_server;
 
 use monad_raptorcast::{
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
@@ -52,12 +53,14 @@ use monad_validator::{
 use monad_wal::wal::WALoggerConfig;
 
 use clap::CommandFactory;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
+use opentelemetry::metrics::MeterProvider;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 
@@ -95,6 +98,23 @@ fn main() {
     drop(cmd);
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
+
+    if let Some(pprof) = node_state.pprof.as_ref().filter(|p| p.len() > 0).cloned() {
+        runtime.spawn({
+            async {
+                let server = match start_pprof_server(pprof) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("failed to start pprof server: {}", err);
+                        return;
+                    }
+                };
+                if let Err(err) = server.await {
+                    error!("pprof server failed: {}", err);
+                }
+            }
+        });
+    }
 
     if let Err(e) = runtime.block_on(run(node_state)) {
         error!("monad consensus node crashed: {:?}", e);
@@ -294,6 +314,35 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
     );
 
+    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
+        .otel_endpoint_interval
+        .map(|(otel_endpoint, record_metrics_interval)| {
+            let provider = build_otel_meter_provider(
+                &otel_endpoint,
+                format!(
+                    "{network_name}_{node_name}",
+                    network_name = node_state.node_config.network_name,
+                    node_name = node_state.node_config.node_name
+                ),
+                node_state.node_config.network_name.clone(),
+                record_metrics_interval,
+            )
+            .expect("failed to build otel monad-node");
+
+            let mut timer = tokio::time::interval(record_metrics_interval);
+
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            (provider, timer)
+        })
+        .unzip();
+
+    let maybe_otel_meter = maybe_otel_meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("opentelemetry"));
+
+    let mut gauge_cache = HashMap::new();
+    let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
@@ -310,6 +359,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             result = sigint.recv() => {
                 info!(?result, "received SIGINT, exiting...");
                 break;
+            }
+            _ = match &mut maybe_metrics_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
+                let state_metrics = state.metrics();
+                let executor_metrics = executor.metrics();
+                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -489,6 +547,7 @@ where
         ),
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
+    info!("self_record is {:?}", self_record.signature);
     assert!(
         self_record.signature == peer_discovery_config.self_name_record_sig,
         "self name record signature mismatch"
@@ -671,5 +730,83 @@ where
     ) -> std::task::Poll<Option<Self::Item>> {
         // Never produce any events - StateSync is disabled
         std::task::Poll::Pending
+    }
+}
+
+fn build_otel_meter_provider(
+    otel_endpoint: &str,
+    service_name: String,
+    network_name: String,
+    interval: Duration,
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_timeout(interval * 2)
+        .with_endpoint(otel_endpoint)
+        .build()?;
+
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
+
+    let mut attrs = vec![
+        opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            service_name,
+        ),
+        opentelemetry::KeyValue::new("network", network_name),
+    ];
+    if let Some(version) = MONAD_NODE_VERSION {
+        attrs.push(opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+            version,
+        ));
+    }
+
+    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(attrs)
+                .build(),
+        );
+
+    Ok(provider_builder.build())
+}
+
+const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
+const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
+const GAUGE_NODE_INFO: &str = "monad_node_info";
+
+fn send_metrics(
+    meter: &opentelemetry::metrics::Meter,
+    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
+    state_metrics: &Metrics,
+    executor_metrics: ExecutorMetricsChain,
+    process_start: &Instant,
+    total_state_update_elapsed: &Duration,
+) {
+    let node_info_gauge = gauge_cache
+        .entry(GAUGE_NODE_INFO)
+        .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
+    node_info_gauge.record(1, &[]);
+
+    for (k, v) in state_metrics
+        .metrics()
+        .into_iter()
+        .chain(executor_metrics.into_inner())
+        .chain(std::iter::once((
+            GAUGE_TOTAL_UPTIME_US,
+            process_start.elapsed().as_micros() as u64,
+        )))
+        .chain(std::iter::once((
+            GAUGE_STATE_TOTAL_UPDATE_US,
+            total_state_update_elapsed.as_micros() as u64,
+        )))
+    {
+        let gauge = gauge_cache
+            .entry(k)
+            .or_insert_with(|| meter.u64_gauge(k).build());
+        gauge.record(v, &[]);
     }
 }

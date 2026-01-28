@@ -30,8 +30,8 @@ monad-router-multi = { workspace = true}
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-pprof = { workspace = true }
 # monad-statesync = { workspace = true }
-# monad-pprof = { workspace = true }
 # monad-triedb-cache = { workspace = true }
 # monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }

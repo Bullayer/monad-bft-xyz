@@ -339,7 +339,9 @@ mod test {
 
     use serde_json::json;
 
-    use crate::keystore::{CryptoModules, Keystore};
+    use crate::keystore::{CryptoModules, Keystore, KeystoreSecret, KeystoreVersion};
+
+    use rand::{rngs::OsRng, RngCore};
 
     #[test]
     fn test_keystore_encrypt() {
@@ -437,4 +439,101 @@ mod test {
         assert!(hex::encode(retrieved_secret) == secret);
         assert_eq!(version, crate::keystore::KeystoreVersion::Legacy);
     }
+
+    #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    enum KeyType {
+        Secp,
+        Bls,
+    }
+
+    #[test]
+    fn create_keystore_json() {
+        println!("It is recommended to generate key in air-gapped machine to be secure.");
+        println!("This tool is currently not fit for production use.");
+
+        let mut ikm = vec![0_u8; 32];
+        OsRng.fill_bytes(&mut ikm);
+        println!("Keep your IKM secure: {}", hex::encode(&ikm));
+
+        let keystore_secret = KeystoreSecret::new(ikm);
+
+        let key_type = Some(KeyType::Bls);
+
+        if let Some(key_type) = key_type {
+            // print private and public key using version 2 approach
+            match key_type {
+                KeyType::Bls => {
+                    let bls_keypair = keystore_secret
+                        .clone()
+                        .to_bls(KeystoreVersion::Legacy)
+                        .expect("failed to create bls keypair");
+                    let private_key = bls_keypair.privkey_view();
+                    let public_key = bls_keypair.pubkey();
+                    println!("BLS private key: {}", private_key);
+                    println!("BLS public key: {:?}", public_key);
+                }
+                KeyType::Secp => {
+                    let secp_keypair = keystore_secret
+                        .clone()
+                        .to_secp(KeystoreVersion::Legacy)
+                        .expect("failed to create secp keypair");
+                    let private_key = secp_keypair.privkey_view();
+                    let public_key = secp_keypair.pubkey();
+                    println!("Secp private key: {}", private_key);
+                    println!("Secp public key: {:?}", public_key);
+                }
+            }
+        }
+
+        // generate keystore json file with version 1
+        Keystore::create_keystore_json_with_version(
+            keystore_secret.as_ref(),
+            "",
+            Path::new("./id-bls"),
+            KeystoreVersion::Legacy,
+        )
+        .expect("keystore file generation failed");
+
+        println!("Successfully generated keystore file.");
+    }
+
+    #[test]
+    fn load_keystore_json() {
+        println!("Recovering secret from keystore file...");
+
+        // recover keystore secret with version
+        let (keystore_secret, version) =
+            Keystore::load_key_with_version(Path::new("./id-secp"), "")
+            .expect("failed to load_key_with_version");
+
+        println!("Keystore version: {}", version);
+        println!("Keystore secret: {}", hex::encode(keystore_secret.as_ref()));
+
+        let key_type = Some(KeyType::Secp);
+
+        if let Some(key_type) = key_type {
+            // print public key based on key type and version
+            match key_type {
+                KeyType::Bls => {
+                    let bls_keypair = keystore_secret
+                        .to_bls(version)
+                        .expect("failed to create bls keypair");
+                    let private_key = bls_keypair.privkey_view();
+                    let public_key = bls_keypair.pubkey();
+                    println!("BLS private key: {}", private_key);
+                    println!("BLS public key: {:?}", public_key);
+                }
+                KeyType::Secp => {
+                    let secp_keypair = keystore_secret
+                        .to_secp(version)
+                        .expect("failed to create secp keypair");
+                    let private_key = secp_keypair.privkey_view();
+                    let public_key = secp_keypair.pubkey();
+                    println!("Secp private key: {}", private_key);
+                    println!("Secp public key: {:?}", public_key);
+                }
+            }
+        }
+    }
+
 }

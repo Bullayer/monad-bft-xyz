@@ -14,15 +14,15 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use clap::error::ErrorKind;
-// use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionError};
-// use opentelemetry_otlp::ExporterBuildError;
+use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionError};
+use opentelemetry_otlp::ExporterBuildError;
 use opentelemetry_sdk::trace::TraceError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum NodeSetupError {
-    // #[error(transparent)]
-    // Bls12_381(#[from] monad_bls::BlsError),
+    #[error(transparent)]
+    Bls12_381(#[from] monad_bls::BlsError),
 
     #[error(transparent)]
     ChainConfigError(#[from] monad_chain_config::ChainConfigError),
@@ -39,26 +39,26 @@ pub enum NodeSetupError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
-    // #[error(transparent)]
-    // MetricsError(#[from] ExporterBuildError),
+    #[error(transparent)]
+    MetricsError(#[from] ExporterBuildError),
 
     #[error(transparent)]
     RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
 
-    // #[error(transparent)]
-    // Secp256k1(#[from] monad_secp::Error),
+    #[error(transparent)]
+    Secp256k1(#[from] monad_secp::Error),
 
     #[error(transparent)]
     SetGlobalDefaultError(#[from] tracing::subscriber::SetGlobalDefaultError),
 
-    // #[error(transparent)]
-    // SignatureCollectionError(
-    //     #[from]
-    //     SignatureCollectionError<
-    //         <crate::SignatureCollectionType as SignatureCollection>::NodeIdPubKey,
-    //         <crate::SignatureCollectionType as SignatureCollection>::SignatureType,
-    //     >,
-    // ),
+    #[error(transparent)]
+    SignatureCollectionError(
+        #[from]
+        SignatureCollectionError<
+            <crate::SignatureCollectionType as SignatureCollection>::NodeIdPubKey,
+            <crate::SignatureCollectionType as SignatureCollection>::SignatureType,
+        >,
+    ),
 
     #[error(transparent)]
     TomlDeError(#[from] toml::de::Error),
@@ -78,12 +78,12 @@ impl NodeSetupError {
             => ErrorKind::Io,
             NodeSetupError::ChainConfigError(_)
             | NodeSetupError::FromHexError(_)
-            // | NodeSetupError::Secp256k1(_)
-            // | NodeSetupError::Bls12_381(_)
-            // | NodeSetupError::SignatureCollectionError(_)
+            | NodeSetupError::Secp256k1(_)
+            | NodeSetupError::Bls12_381(_)
+            | NodeSetupError::SignatureCollectionError(_)
             | NodeSetupError::TomlDeError(_)
             | NodeSetupError::TraceError(_)
-            // | NodeSetupError::MetricsError(_) 
+            | NodeSetupError::MetricsError(_) 
             => ErrorKind::ValueValidation,
         }
     }

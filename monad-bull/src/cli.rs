@@ -70,8 +70,8 @@ pub struct Cli {
 
     /// Set the sq_thread_cpu for statesync client. None means SQPOLL mode is
     /// disabled
-    #[arg(long)]
-    pub statesync_sq_thread_cpu: Option<u32>,
+    // #[arg(long)]
+    // pub statesync_sq_thread_cpu: Option<u32>,
 
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
@@ -86,12 +86,11 @@ pub struct Cli {
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,
 
-    // #[arg(
-    //     long,
-    //     help = "listen address for pprof server. pprof server won't be enabled if address is empty",
-    //     default_value = ""
-    // )]
-    // pub pprof: String
+    #[arg(
+        long,
+        help = "listen address for pprof server. pprof server won't be enabled if address is empty",
+    )]
+    pub pprof: Option<String>,
 
     // #[arg(long)]
     // pub manytrace_socket: Option<String>,

@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "ciphertext": "1fa8ca9e36e6508e4ad75ec9bda527c1d5b553d6b7caee827b2682cd83709756",
+    "checksum": "f08e95e8f4755a92b47485966d04999d8d46e320cbb7f44ec3f6c2db4be308a5",
+    "cipher": {
+        "cipher_function": "AES_128_CTR",
+        "params": {
+            "iv": "89bfad53ccc75cd7e465b99a8b1b1689"
+        }
+    },
+    "kdf": {
+        "kdf_name": "scrypt",
+        "params": {
+            "salt": "45bafa7da2d829be396dc94c8c1a694c44e2cef659fabb230366d34e01dc4c25",
+            "key_len": 32,
+            "n": 262144,
+            "r": 8,
+            "p": 1
+        }
+    },
+    "hash": "SHA256"
+}

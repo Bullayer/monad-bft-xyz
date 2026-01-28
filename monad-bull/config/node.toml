@@ -30,15 +30,16 @@ chain_id = 20143
 [bootstrap]
 peers = []
 # [[bootstrap.peers]]
-# address = "x.x.x.x:xxxx"
+# address = "192.168.2.106:8000"
 # record_seq_num = 0
-# secp256k1_pubkey = "..."
-# name_record_sig = "..."
+# secp256k1_pubkey = "0x02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+# name_record_sig = "85663053b3d719985357b56270ba320abadd1c51e10ea06430f3990d81393dc7770ff661c331bd631afca705029b0fd77cc0f48d46b37c8d8523c73c6af1242801"
 
 [peer_discovery]
 self_address = "0.0.0.0:8000"
 self_record_seq_num = 0
 self_name_record_sig = "85663053b3d719985357b56270ba320abadd1c51e10ea06430f3990d81393dc7770ff661c331bd631afca705029b0fd77cc0f48d46b37c8d8523c73c6af1242801"
+# self_name_record_sig = "c2d0e176fa2041ae8437f419ca4363f925cf120095a5800130ab168c94d5425c2d8bcaf0a265ada3950274a2d6769d799ae209f69ae827254ac30256a65aa95e01"
 refresh_period = 120
 request_timeout = 5
 unresponsive_prune_threshold = 5

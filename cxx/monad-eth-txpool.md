@@ -329,6 +329,23 @@ pub fn validate<...>(...) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropR
     - 先 `tracked.evict_expired_txs`（出块前主动清掉过期）
     - 检测 `chain_revision/execution_revision` 是否变化，变化则 `static_validate_all_txs`（协议升级导致的静态规则变化）
     - 生成 system tx（`get_system_transactions`）
+      在 Monad 这套实现里，system tx = 由“系统发送者(system sender)”签名、由协议规则确定性生成、用于执行系统合约调用的一类交易。
+      在当前的实现里 system tx具体就是
+        - 
+          ```rust
+              // epoch 末尾：生成 Snapshot
+            let generate_snapshot_txn = proposed_seq_num.is_epoch_end(epoch_length)
+                && proposed_seq_num.get_locked_epoch(epoch_length) >= staking_activation;
+            if generate_snapshot_txn { ... Snapshot ... }
+
+            // epoch 切换点：生成 EpochChange（含 genesis 特判）
+            let generate_epoch_change_txn = is_first_epoch_block || is_genesis_block;
+            if generate_epoch_change_txn { ... EpochChange { new_epoch } ... }
+
+            // 每个区块：生成 Reward（staking 激活后）
+            let generate_reward_txn = proposed_epoch >= staking_activation;
+            if generate_reward_txn { ... Reward { block_author_address, block_reward } ... }
+          ```
     - 生成 user tx（`sequence_user_transactions`）
 
 - **`sequence_user_transactions(...)`**

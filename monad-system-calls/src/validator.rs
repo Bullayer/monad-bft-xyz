@@ -192,6 +192,7 @@ impl SystemTransactionValidator {
     pub fn validate_system_transactions_input<ST, SCT, CCT, CRT>(
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         parent_block_epoch: Epoch,
+        // 已从区块交易列表中提取出来的系统交易（按顺序）
         sys_txns: &Vec<ValidatedTx>,
         chain_config: &CCT,
     ) -> Result<(), SystemTransactionValidationError>
@@ -202,10 +203,13 @@ impl SystemTransactionValidator {
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
     {
+        // 将纳秒时间戳转换为秒，用于根据时间获取链上执行版本（revision）
+        // 若转换失败则使用 u64::MAX 作为兜底，避免 panic
         let timestamp_s: u64 = (block_header.timestamp_ns / 1_000_000_000)
             .try_into()
             .unwrap_or(u64::MAX);
 
+        // 如果当前执行版本不要求校验系统交易，则此阶段不应出现任何系统交易
         if !chain_config
             .get_execution_chain_revision(timestamp_s)
             .execution_chain_params()
@@ -218,6 +222,8 @@ impl SystemTransactionValidator {
             return Ok(());
         }
 
+        // 根据区块头信息（序号、epoch、父 epoch、出块者地址等）生成“期望”的系统调用序列
+        // 后续会逐个与 sys\_txns 对齐校验
         let expected_sys_calls = generate_system_calls(
             block_header.seq_num,
             block_header.epoch,
@@ -226,31 +232,34 @@ impl SystemTransactionValidator {
             chain_config,
         );
 
+        // 记录本区块期望生成的系统调用，便于排查共识/执行侧不一致问题
         info!(
-            ?expected_sys_calls,
-            block_seq_num =? block_header.seq_num,
-            block_epoch =? block_header.epoch,
-            ?parent_block_epoch,
-            "generated expected system calls"
-        );
+        ?expected_sys_calls,
+        block_seq_num =? block_header.seq_num,
+        block_epoch =? block_header.epoch,
+        ?parent_block_epoch,
+        "generated expected system calls"
+    );
 
+        // 系统交易数量必须与期望系统调用数量一致（数量不一致直接判定为异常）
         if expected_sys_calls.len() != sys_txns.len() {
             warn!(
-                ?sys_txns,
-                ?expected_sys_calls,
-                "unexpected system transactions length"
-            );
+            ?sys_txns,
+            ?expected_sys_calls,
+            "unexpected system transactions length"
+        );
             return Err(SystemTransactionValidationError::UnexpectedSystemTransaction);
         }
 
+        // 一一配对校验：第 i 个系统交易必须匹配第 i 个期望系统调用
+        // 校验内容由 expected\_sys\_call.validate\_system\_transaction\_input() 定义
         for (expected_sys_call, sys_txn) in expected_sys_calls.into_iter().zip(sys_txns) {
-            if let Err(sys_txn_error) = expected_sys_call.validate_system_transaction_input(sys_txn)
-            {
+            if let Err(sys_txn_error) = expected_sys_call.validate_system_transaction_input(sys_txn) {
                 debug!(
-                    ?expected_sys_call,
-                    ?sys_txn_error,
-                    "system transaction error"
-                );
+                ?expected_sys_call,
+                ?sys_txn_error,
+                "system transaction error"
+            );
                 return Err(SystemTransactionValidationError::SystemTransactionError(
                     sys_txn_error,
                 ));

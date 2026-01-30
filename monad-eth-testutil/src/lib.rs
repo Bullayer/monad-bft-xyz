@@ -117,6 +117,31 @@ pub fn make_legacy_tx(
     transaction.into_signed(signature).into()
 }
 
+pub fn make_legacy_tx_with_chain_id(
+    sender: FixedBytes<32>,
+    gas_price: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+    chain_id: u64,
+) -> TxEnvelope {
+    let transaction = TxLegacy {
+        chain_id: Some(chain_id),
+        nonce,
+        gas_price,
+        gas_limit,
+        to: TxKind::Call(Address::repeat_byte(0u8)),
+        value: Default::default(),
+        input: vec![0; input_len].into(),
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
+}
+
 pub fn make_eip1559_tx(
     sender: FixedBytes<32>,
     max_fee_per_gas: u128,

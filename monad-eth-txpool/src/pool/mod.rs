@@ -211,8 +211,9 @@ where
                             < compute_txn_max_gas_cost(tx.raw(), last_commit_base_fee)
                     })
                 {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
-                    return false;
+                    // TODO no judgement on insufficient balance for now
+                    // event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                    // return false;
                 }
 
                 true

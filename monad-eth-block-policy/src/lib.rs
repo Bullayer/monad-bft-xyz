@@ -202,6 +202,8 @@ struct CommittedBlkBuffer<ST, SCT, CCT, CRT> {
     blocks: SortedVectorMap<SeqNum, CommittedBlock>,
     min_buffer_size: usize, // should be 2 * execution delay
 
+    // PhantomData 用于标记类型参数，确保编译器知道此结构体与这些类型有关联
+    // 即使这些类型没有在结构体字段中直接使用，也能保证类型安全和生命周期检查正确
     _phantom: PhantomData<(ST, SCT, fn(&CCT, &CRT))>,
 }
 
@@ -244,10 +246,14 @@ where
             "before update_account_balance"
         );
 
+        // 处理可能清空账户的交易检查范围
+        // 这个范围内的交易可能会影响账户余额状态
         let mut next_validate = emptying_txn_check_block_range.start;
         for (seq_num, block) in self.blocks.range(emptying_txn_check_block_range) {
             assert_eq!(*seq_num, next_validate, "Emptying range is not contiguous");
 
+            // 如果区块包含此地址的费用，并且账户最新交易序号小于当前区块序号
+            // 更新账户的最新交易区块序号
             if block.fees.get(eth_address).is_some()
                 && account_balance.block_seqnum_of_latest_txn < block.seq_num
             {
@@ -256,13 +262,17 @@ where
             next_validate += SeqNum(1);
         }
 
+        // 处理储备余额检查范围
+        // 验证账户是否有足够的储备余额支付交易费用
         for (seq_num, block) in self.blocks.range(reserve_balance_check_block_range) {
             assert_eq!(
                 *seq_num, next_validate,
                 "Reserve balance check range is not contiguous"
             );
 
+            // 如果区块包含此地址的交易费用，则应用费用到账户余额
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
+                // 创建区块验证器，用于验证交易费用
                 let validator = EthBlockPolicyBlockValidator::new(
                     block.seq_num,
                     execution_delay,
@@ -278,6 +288,7 @@ where
                     block.seq_num,
                     account_balance
                 );
+                // 尝试应用区块费用到账户余额
                 validator.try_apply_block_fees(account_balance, &block_txn_fees, eth_address)?;
             }
             next_validate += SeqNum(1);
@@ -295,28 +306,39 @@ where
     fn update_committed_block(&mut self, block: &EthValidatedBlock<ST, SCT>) {
         let block_number = block.get_seq_num();
         debug!(?block_number, "update_committed_block");
+        
+        // 确保区块是按顺序添加的，即当前区块序号应等于最后一个区块序号+1
         if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
         let current_size = self.blocks.len();
 
+        // 如果缓冲区大小超过最小缓冲区大小的两倍，则进行清理
+        // 保留最新的min_buffer_size个区块，移除较旧的区块
         if current_size >= self.min_buffer_size.saturating_mul(2) {
             let (&first_block_num, _) = self.blocks.first_key_value().expect("txns non-empty");
+            // 计算分割点，保留最新的min_buffer_size个区块
             let divider =
                 first_block_num + SeqNum(current_size as u64 - self.min_buffer_size as u64);
 
             // TODO: revisit once perf implications are understood
+            // 分割区块缓冲区，保留较新的区块
             self.blocks = self.blocks.split_off(&divider);
+            // 确保分割后的最后一个区块序号+1等于当前要插入的区块序号
             assert_eq!(
                 *self.blocks.last_key_value().expect("non-empty").0 + SeqNum(1),
                 block_number
             );
+            // 确保分割后的缓冲区大小仍至少为最小缓冲区大小
             assert!(self.blocks.len() >= self.min_buffer_size);
         }
 
+        // 计算区块的总gas使用量
         let block_gas_usage = block.get_total_gas();
 
+        // 将新区块插入到缓冲区中
+        // 区块信息包括区块ID、轮次、纪元、序号、nonce使用情况、时间戳、费用等
         assert!(self
             .blocks
             .insert(
@@ -409,6 +431,7 @@ where
             Balance::from(self.chain_revision.chain_params().max_reserve_balance);
 
         if !tfm_enabled {
+            // 在TFM禁用的情况下，直接检查账户余额是否足够支付交易费用
             if account_balance.balance < block_txn_fees.max_txn_cost {
                 trace!(
                     seq_num =?self.block_seq_num,
@@ -421,6 +444,7 @@ where
                 ));
             }
 
+            // 更新账户余额，扣除交易费用
             let estimated_balance = account_balance
                 .balance
                 .saturating_sub(block_txn_fees.max_txn_cost);
@@ -441,16 +465,20 @@ where
             return Ok(());
         }
 
+        // 检查是否为可能清空账户的交易
         let is_possibly_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance,
             self.execution_delay,
         );
+        // 如果账户尚未委托并且在执行延迟内没有先前的交易，则认为是清空交易
+        // 除非交易还包含来自发送者的授权（表明这不是清空交易）
         let has_emptying_transaction =
             is_possibly_emptying_transaction && !block_txn_fees.delegation_before_first_txn;
 
         let mut block_gas_cost = block_txn_fees.max_gas_cost;
         if has_emptying_transaction {
+            // 对于清空交易，检查账户余额是否足够支付第一笔交易的gas费用
             if account_balance.balance < block_txn_fees.first_txn_gas {
                 trace!(
                     "Block with insufficient balance: {:?} \
@@ -468,11 +496,14 @@ where
                     BlockPolicyBlockValidatorError::InsufficientBalance,
                 ));
             }
+            // 计算第一笔交易的总成本（价值+gas）
             let first_txn_cost = block_txn_fees
                 .first_txn_value
                 .saturating_add(block_txn_fees.first_txn_gas);
+            // 从账户余额中扣除第一笔交易的成本
             let estimated_balance = account_balance.balance.saturating_sub(first_txn_cost);
 
+            // 更新剩余储备余额和账户余额
             account_balance.remaining_reserve_balance = estimated_balance.min(max_reserve_balance);
             account_balance.balance = estimated_balance;
 
@@ -489,11 +520,13 @@ where
                 eth_address,
             );
         } else {
+            // 对于非清空交易，将第一笔交易的gas成本加到总的gas成本中
             block_gas_cost = block_txn_fees
                 .max_gas_cost
                 .saturating_add(block_txn_fees.first_txn_gas);
         }
 
+        // 检查账户的剩余储备余额是否足够支付gas成本
         if account_balance.remaining_reserve_balance < block_gas_cost {
             trace!(
                 "Block with insufficient reserve balance: {:?} \
@@ -509,10 +542,13 @@ where
                 BlockPolicyBlockValidatorError::InsufficientReserveBalance,
             ));
         }
+        // 从剩余储备余额中扣除gas成本
         account_balance.remaining_reserve_balance = account_balance
             .remaining_reserve_balance
             .saturating_sub(block_gas_cost);
+        // 更新账户最新交易的序列号
         account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
+        // 如果交易涉及委托，则更新账户的委托状态
         account_balance.is_delegated |= block_txn_fees.is_delegated;
 
         trace!(
@@ -544,6 +580,8 @@ where
             ));
         };
 
+        // 如果 TFM（交易费用模块）未启用，则使用旧的交易费用计算方式
+        println!("{} {}", self.execution_chain_revision.execution_chain_params().tfm_enabled, "====== check tfm_enabled ======");
         if !self
             .execution_chain_revision
             .execution_chain_params()
@@ -582,36 +620,42 @@ where
             return Ok(());
         }
 
+        // 判断是否为空化交易（emptying transaction）
+        // 空化交易是指账户在执行延迟内没有之前的交易，可能将账户余额清零的交易
         let is_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance,
             self.execution_delay,
         );
-        // if txn is a transaction that also contains an authorization from the sender, we consider
-        // the transaction to be non emptying transaction
+
+        // 如果交易包含发送者自己的授权（EIP-7702），则不视为空化交易
+        // 因为这种情况下发送者知道自己正在进行授权
         let contains_self_authorization = txn
             .authorizations_7702
             .iter()
             .any(|auth| auth.authority() == Some(eth_address));
         let is_emptying_transaction = is_emptying_transaction && !contains_self_authorization;
 
-        // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
+        // 根据是否为空化交易分别处理
         if is_emptying_transaction {
+            // 空化交易：从账户余额中扣除费用
             let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
-            if account_balance.balance < txn_max_gas {
-                trace!(
-                    seq_num =?self.block_seq_num,
-                    ?account_balance,
-                    ?txn_max_gas,
-                    ?txn,
-                    ?is_emptying_transaction,
-                    "Emptying txn can not be accepted insufficient reserve balance"
-                );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
-            }
+            // TODO rollback
+            // if account_balance.balance < txn_max_gas {
+            //     trace!(
+            //         seq_num =?self.block_seq_num,
+            //         ?account_balance,
+            //         ?txn_max_gas,
+            //         ?txn,
+            //         ?is_emptying_transaction,
+            //         "Emptying txn can not be accepted insufficient reserve balance"
+            //     );
+            //     return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            //         BlockPolicyBlockValidatorError::InsufficientBalance,
+            //     ));
+            // }
 
+            // 计算交易的最大成本（包括价值和gas费用）
             let txn_max_cost = compute_txn_max_value(txn, self.base_fee);
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
@@ -632,24 +676,28 @@ where
                 self.block_seq_num,
                 eth_address,
             );
+
             account_balance.balance = estimated_balance;
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         } else {
+            // 非空化交易：从预留余额中扣除gas费用
             let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
-            if account_balance.remaining_reserve_balance < txn_max_gas {
-                trace!(
-                    seq_num =?self.block_seq_num,
-                    ?account_balance,
-                    ?txn_max_gas,
-                    ?txn,
-                    ?is_emptying_transaction,
-                    "Non-emptying txn can not be accepted insufficient reserve balance"
-                );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientReserveBalance,
-                ));
-            }
+            // TODO rollback
+            // if account_balance.remaining_reserve_balance < txn_max_gas {
+            //     trace!(
+            //         seq_num =?self.block_seq_num,
+            //         ?account_balance,
+            //         ?txn_max_gas,
+            //         ?txn,
+            //         ?is_emptying_transaction,
+            //         "Non-emptying txn can not be accepted insufficient reserve balance"
+            //     );
+            //     return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+            //         BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+            //     ));
+            // }
+
             let reserve_balance = account_balance
                 .remaining_reserve_balance
                 .saturating_sub(txn_max_gas);
@@ -658,7 +706,8 @@ where
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         }
 
-        // update delegation status of authority addresses
+        // 更新授权地址的委托状态
+        // EIP-7702 授权交易会使被授权地址进入委托状态
         for recovered_auth in &txn.authorizations_7702 {
             if let Some(auth_address) = recovered_auth.authority() {
                 if let Some(account_balance) = account_balances.get_mut(&auth_address) {
@@ -708,7 +757,10 @@ where
         }
     }
 
-    /// returns account nonces at the start of the provided consensus block
+    /// 返回所提供共识块开始时的账户nonce值
+    ///
+    /// 此函数计算在指定共识块开始执行时各账户应有的nonce值，
+    /// 考虑了已提交的块和扩展块中的交易对nonce的影响
     pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
@@ -716,19 +768,23 @@ where
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Nonce>, StateBackendError> {
-        // Layers of access
-        // 1. extending_blocks: coherent blocks in the blocks tree
-        // 2. committed_block_nonces: always buffers the nonce of last `delay`
-        //    committed blocks
-        // 3. LRU cache of triedb nonces
-        // 4. triedb query
+        // 访问层级说明:
+        // 1. extending_blocks: 块树中的连贯块
+        // 2. committed_block_nonces: 始终缓存最后`delay`个已提交块的nonce
+        // 3. triedb nonce的LRU缓存
+        // 4. triedb查询
 
+        // 获取唯一地址列表
         let addresses = addresses.unique().collect::<HashSet<&'a Address>>();
 
+        // 计算基础序列号，这是考虑执行延迟后的位置
+        // 如果共识块序列号小于执行延迟，则从0开始
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
 
         let mut cached_nonce_usages = NonceUsageMap::default();
 
+        // 遍历所有相关块（已提交块和扩展块）中的nonce使用情况
+        // 只考虑序列号大于base_seq_num的块，并按逆序处理（从最新到最旧）
         for nonce_usages in self
             .committed_cache
             .blocks
@@ -739,54 +795,65 @@ where
                     .iter()
                     .map(|block| (block.get_seq_num(), &block.nonce_usages)),
             )
-            .filter(|(seq_num, _)| *seq_num > base_seq_num)
-            .rev()
+            .filter(|(seq_num, _)| *seq_num > base_seq_num)  // 只处理比基础序列号更新的块
+            .rev()  // 逆序遍历，从最新的块开始
             .map(|(_, nonce_usages)| {
+                // 只保留我们关心的地址的nonce使用情况
                 nonce_usages
                     .map
                     .iter()
                     .filter(|(address, _)| addresses.contains(address))
             })
         {
+            // 合并当前块的nonce使用情况到缓存中
             cached_nonce_usages.merge_with_previous_block(nonce_usages);
         }
 
         let mut account_nonces = BTreeMap::default();
-        let mut cache_misses = Vec::new();
+        let mut cache_misses = Vec::new();  // 存储无法从缓存获取nonce的地址
 
+        // 处理每个地址的nonce使用情况
         for address in addresses {
             match cached_nonce_usages.get(address) {
+                // 如果缓存中有确切的nonce值，直接使用（+1是因为我们要的是下一个可用的nonce）
                 Some(NonceUsage::Known(nonce)) => {
                     account_nonces.insert(address, *nonce + 1);
                 }
+                // 如果缓存中只有可能的nonce值，需要进一步查询状态
                 Some(NonceUsage::Possible(possible)) => {
                     cache_misses.push((address, Some(possible)));
                 }
+                // 如果缓存中没有该地址的信息，也需要查询状态
                 None => {
                     cache_misses.push((address, None));
                 }
             }
         }
 
-        // the cached account nonce must overlap with latest triedb, i.e.
-        // account_nonces must keep nonces for last delay blocks in cache
-        // the cache should keep track of block number for the nonce state
-        // when purging, we never purge nonces newer than last_commit - delay
+        // 缓存的账户nonce必须与最新的triedb重叠，即:
+        // account_nonces必须在缓存中保留最后delay个块的nonce
+        // 缓存应该跟踪nonce状态的块号
+        // 清理时，我们永远不会清理比last_commit - delay更新的nonce
 
+        // 对于缓存未命中的地址，查询状态后端获取账户状态
         let cache_miss_statuses = self.get_account_statuses(
             state_backend,
             &Some(extending_blocks),
-            cache_misses.iter().map(|(address, _)| *address),
-            &base_seq_num,
+            cache_misses.iter().map(|(address, _)| *address),  // 提取地址
+            &base_seq_num,  // 使用基础序列号查询状态
         )?;
 
+        // 将查询到的状态信息与缓存未命中的地址合并
         account_nonces.extend(cache_misses.into_iter().zip_eq(cache_miss_statuses).map(
             |((address, possible_nonces), status)| {
+                // 从状态中获取nonce，如果没有状态则默认为0
                 let nonce = status.map_or(0, |status| status.nonce);
 
+                // 根据可能的nonce值调整最终的nonce
                 (
                     address,
                     possible_nonces.map_or(nonce, |possible_nonces| {
+                        // 应用可能的nonce值到账户nonce上
                         NonceUsage::apply_possible_nonces_to_account_nonce(nonce, possible_nonces)
                     }),
                 )
@@ -815,7 +882,9 @@ where
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         base_seq_num: &SeqNum,
     ) -> Result<BlockLookupIndex, StateBackendError> {
+        // 如果查询的序号在或早于最后提交的序号，则从已提交缓存中获取信息
         if base_seq_num <= &self.last_commit {
+            // 特殊处理创世块：返回创世块信息（固定标识）
             if base_seq_num == &GENESIS_SEQ_NUM {
                 Ok(BlockLookupIndex {
                     block_id: GENESIS_BLOCK_ID,
@@ -824,6 +893,8 @@ where
                     is_finalized: true,
                 })
             } else {
+                // 从 committed_cache 中查找对应序号的区块
+                // 若不存在则 panic，因为这表示逻辑错误（查询了应存在的已提交块）
                 let committed_block = &self
                     .committed_cache
                     .blocks
@@ -837,6 +908,8 @@ where
                 })
             }
         } else if let Some(extending_blocks) = extending_blocks {
+            // 查询序号在 last_commit 之后：在 extending_blocks 中查找对应的候选（未最终化）区块
+            // 若未找到则 panic，表示调用方传入的 extending_blocks 不包含该序号
             let proposed_block = extending_blocks
                 .iter()
                 .find(|block| &block.get_seq_num() == base_seq_num)
@@ -848,6 +921,7 @@ where
                 is_finalized: false,
             })
         } else {
+            // 既不是已提交块，也没有 extending_blocks 可用：状态后端尚不可用
             Err(StateBackendError::NotAvailableYet)
         }
     }
@@ -882,9 +956,12 @@ where
     {
         // calculation correct only if GENESIS_SEQ_NUM == 0
         assert_eq!(GENESIS_SEQ_NUM, SeqNum(0));
+        // 计算基准序列号，确保它不会小于执行延迟
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
 
+        // 获取基准块索引，用于查询账户状态
         let block_index = self.get_block_index(&extending_blocks, &base_seq_num)?;
+        // 从链配置中获取最大储备余额
         let base_max_reserve_balance = Balance::from(
             chain_config
                 .get_chain_revision(block_index.round)
@@ -892,7 +969,9 @@ where
                 .max_reserve_balance,
         );
 
+        // 获取唯一地址列表
         let addresses = addresses.unique().collect_vec();
+        // 获取账户状态，如果账户不存在则使用默认状态
         let account_balances = self
             .get_account_statuses(
                 state_backend,
@@ -909,7 +988,7 @@ where
                             balance: status.balance,
                             remaining_reserve_balance: status.balance.min(base_max_reserve_balance),
                             max_reserve_balance: base_max_reserve_balance,
-                            block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
+                            block_seqnum_of_latest_txn: base_seq_num, // 最悲观的假设
                             is_delegated: status.is_delegated,
                         }
                     },
@@ -917,34 +996,37 @@ where
             })
             .collect_vec();
 
+        // 为每个地址计算并更新账户余额状态
         let account_balances: Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError> =
             addresses
                 .into_iter()
                 .zip_eq(account_balances)
                 .map(|(address, mut balance_state)| {
-                    // N - k + 1
+                    // 计算储备余额检查起始位置: N - k + 1
                     let reserve_balance_check_start = base_seq_num + SeqNum(1);
-                    // N - 2k + 2
+                    // 计算清空交易检查起始位置: N - 2k + 2
                     let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
                         .max(self.execution_delay)
                         - self.execution_delay;
 
+                    // 如果起始位置是创世块，则向前移动一位
                     if emptying_txn_check_start == GENESIS_SEQ_NUM {
                         emptying_txn_check_start += SeqNum(1);
                     }
 
-                    // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
+                    // 定义清空交易检查范围：[N - 2k + 2, N - k + 1)
                     let emptying_txn_check_block_range =
                         emptying_txn_check_start..reserve_balance_check_start;
-                    // N - k + 1 (inclusive) to N (non inclusive)
+                    // 定义储备余额检查范围：[N - k + 1, N)
                     let reserve_balance_check_block_range = reserve_balance_check_start..;
 
+                    // 如果清空交易检查起始位置大于创世块，则设置最新的交易序列号
                     if emptying_txn_check_start > GENESIS_SEQ_NUM {
                         balance_state.block_seqnum_of_latest_txn =
                             emptying_txn_check_start - SeqNum(1);
                     }
 
-                    // check for emptying txs and reserve balance in committed blocks
+                    // 在已提交的区块中检查清空交易和储备余额
                     let mut next_validate = self.committed_cache.update_account_balance(
                         &mut balance_state,
                         address,
@@ -954,25 +1036,28 @@ where
                         chain_config,
                     )?;
 
-                    // check for emptying txs and reserve balance in extending blocks
+                    // 在扩展区块中检查清空交易和储备余额
                     if let Some(blocks) = extending_blocks {
-                        // handle the case where base_seq_num is a pending block
+                        // 处理 base_seq_num 是待处理块的情况
                         let next_blocks = blocks
                             .iter()
                             .skip_while(move |block| block.get_seq_num() < next_validate);
 
+                        // 遍历后续区块并更新余额
                         for extending_block in next_blocks {
                             assert_eq!(next_validate, extending_block.get_seq_num());
 
+                            // 如果当前区块包含目标地址的交易费用信息
                             if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                                // if still within check emptying range, update latest tx seq num
-                                // otherwise check for reserve balance
+                                // 如果仍在清空交易检查范围内，更新最新交易序列号
+                                // 否则检查储备余额
                                 if next_validate < reserve_balance_check_start {
                                     if balance_state.block_seqnum_of_latest_txn < next_validate {
                                         balance_state.block_seqnum_of_latest_txn =
                                             extending_block.get_seq_num();
                                     }
                                 } else {
+                                    // 创建区块验证器并应用费用到账户余额
                                     let validator = EthBlockPolicyBlockValidator::new(
                                         extending_block.get_seq_num(),
                                         self.execution_delay,
@@ -1300,6 +1385,7 @@ where
     ) -> Result<(), BlockPolicyError> {
         let chain_id = chain_config.chain_id();
 
+        // 确保第一个块的序列号是连续的（等于最后提交的块 + 1）
         let first_block = extending_blocks
             .iter()
             .chain(std::iter::once(&block))
@@ -1307,15 +1393,17 @@ where
             .unwrap();
         assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
 
-        // check coherency against the block being extended or against the root of the blocktree if
-        // there is no extending branch
+        // 检查相对于被扩展块的连贯性，如果没有扩展分支则检查相对于区块树根的连贯性
         let (extending_seq_num, extending_timestamp) =
             if let Some(extended_block) = extending_blocks.last() {
+                // 如果存在扩展块，使用其序列号和时间戳
                 (extended_block.get_seq_num(), extended_block.get_timestamp())
             } else {
+                // 否则使用区块树根的信息（时间戳设为0，因为RootInfo缺少时间戳）
                 (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
 
+        // 检查块序列号是否连续（当前块序列号应该是扩展块序列号+1）
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
             warn!(
                 seq_num =? block.header().seq_num,
@@ -1325,6 +1413,7 @@ where
             return Err(BlockPolicyError::BlockNotCoherent);
         }
 
+        // 检查时间戳是否单调递增（当前块时间戳应该大于扩展块时间戳）
         if block.get_timestamp() <= extending_timestamp {
             warn!(
                 seq_num =? block.header().seq_num,
@@ -1336,6 +1425,7 @@ where
             return Err(BlockPolicyError::TimestampError);
         }
 
+        // 验证执行结果是否匹配预期值
         let expected_execution_results = self.get_expected_execution_results(
             block.get_seq_num(),
             extending_blocks.clone(),
@@ -1352,17 +1442,19 @@ where
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
 
-        // verify base_fee fields
+        // 验证基础费用字段（base_fee, base_fee_trend, base_fee_moment）
         let maybe_tfm_base_fees =
             self.compute_base_fee(&extending_blocks, chain_config, block.get_timestamp());
 
         let (base_fee, base_fee_trend, base_fee_moment) = match maybe_tfm_base_fees {
             Some((base_fee, base_fee_trend, base_fee_moment)) => {
+                // 如果启用了TFM，获取计算出的基础费用字段
                 (Some(base_fee), Some(base_fee_trend), Some(base_fee_moment))
             }
-            None => (None, None, None),
+            None => (None, None, None), // 如果未启用TFM，所有字段都为None
         };
 
+        // 比较区块头中的基础费用字段与计算得出的值
         if base_fee != block.header().base_fee
             || base_fee_trend != block.header().base_fee_trend
             || base_fee_moment != block.header().base_fee_moment
@@ -1377,16 +1469,17 @@ where
             return Err(BlockPolicyError::BaseFeeError);
         }
 
+        // 提取交易签名者地址和授权地址
         let (tx_signers, _) = self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
-        // these must be updated as we go through txs in the block
+        // 获取账户基础nonce值，这些值会在处理区块中的交易时更新
         let mut account_nonces = self.get_account_base_nonces(
             block.get_seq_num(),
             state_backend,
             &extending_blocks,
             tx_signers.iter(),
         )?;
-        // these must be updated as we go through txs in the block
+        // 计算账户基础余额，这些值会在处理区块中的交易时更新
         let mut account_balances = self.compute_account_base_balances(
             block.get_seq_num(),
             state_backend,
@@ -1395,6 +1488,7 @@ where
             tx_signers.iter(),
         )?;
 
+        // 创建区块验证器实例，用于验证交易
         let validator = EthBlockPolicyBlockValidator::new(
             block.get_seq_num(),
             self.execution_delay,
@@ -1405,6 +1499,7 @@ where
             &chain_config.get_execution_chain_revision(timestamp_ns_to_secs(block.get_timestamp())),
         )?;
 
+        // 验证系统交易输入的有效性
         if let Err(system_txn_error) =
             self.validate_system_transactions_input(block, &extending_blocks, chain_config)
         {
@@ -1414,16 +1509,21 @@ where
             );
             return Err(BlockPolicyError::SystemTransactionError);
         }
+        // 检查系统交易的nonce是否正确
         self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
 
+        // 遍历并验证区块中的每笔交易
         for txn in block.validated_txns.iter() {
+            // 验证并更新交易发送者的nonce
             self.nonce_check_and_update(txn, &mut account_nonces)?;
+            // 验证交易并更新账户余额
             validator.try_add_transaction(&mut account_balances, txn)?;
 
+            // 处理EIP-7702授权交易
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
-            // "The authorization list is processed before the execution portion
-            // of the transaction begins, but after the sender’s nonce is incremented."
+            // "授权列表在执行部分开始之前处理，但在发送者nonce递增之后。"
             if txn.is_eip7702() {
+                // 更新授权地址的nonce（如果授权验证通过）
                 self.eip_7702_valid_nonce_update(
                     &txn.authorizations_7702,
                     &mut account_nonces,

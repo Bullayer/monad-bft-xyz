@@ -107,3 +107,44 @@ enable_all() 确保所有必要的异步特性都可用
 | Future  | ChannelFuture   |
 | Waker   | Selector wakeup |
 | Runtime | EventLoopGroup  |
+
+
+----------------------------------------------
+
+根据项目代码分析，**monoio crate** 在这个 Monad BFT 项目中的作用如下：
+
+## 主要作用
+
+**monoio** 是一个高性能的 Rust 异步运行时库，专门为高性能 I/O 操作设计。在这个项目中主要用于：
+
+### 1. **网络数据平面 (monad-dataplane)**
+- 提供异步 TCP/UDP 网络通信能力
+- 支持高并发网络连接处理
+- 实现节点间的消息传递
+
+### 2. **高性能 I/O 驱动**
+```172:172:Cargo.toml
+monoio = { version = "0.2.4", features = ["sync"] }
+```
+
+项目根据平台选择不同的驱动：
+- **Linux**: 使用 `IoUringDriver` (io_uring)
+- **其他平台**: 使用 `LegacyDriver`
+
+### 3. **核心网络功能**
+在 `monad-dataplane` 包中用于：
+- **TCP 通信**: 节点间可靠的消息传输
+- **UDP 通信**: 高性能的数据包传输
+- **异步网络编程**: 提供 `spawn`, `select`, `timeout` 等异步原语
+
+### 4. **测试和示例**
+也在 `monad-wireauth` 的测试和示例中使用，用于验证认证协议的网络通信。
+
+## 为什么选择 monoio？
+
+这个区块链共识系统需要极高的网络性能来处理：
+- 节点间的共识消息
+- 交易数据传输
+- 区块同步
+
+monoio 的 io_uring 支持（Linux 5.1+）提供了比传统 epoll 更高的 I/O 性能，是构建高性能区块链网络的关键组件。

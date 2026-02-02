@@ -126,6 +126,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .validators_config
         .get_locked_validator_sets(&node_state.forkpoint_config);
 
+    // ...checkpoint to store statedb
     let current_epoch = node_state
         .forkpoint_config
         .high_certificate
@@ -547,7 +548,7 @@ where
         ),
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
-    info!("self_record is {:?}", self_record.signature);
+    info!("MonadNameRecord is {:?}", self_record.signature);
     assert!(
         self_record.signature == peer_discovery_config.self_name_record_sig,
         "self name record signature mismatch"

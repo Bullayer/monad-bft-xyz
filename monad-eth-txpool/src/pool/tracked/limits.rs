@@ -21,15 +21,13 @@ use tracing::{error, info};
 
 use crate::pool::transaction::ValidEthTransaction;
 
-// To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
-// pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
-// unique addresses in the pending blocktree, the tracked tx map will still have at least 5k other
-// addresses with at least one tx each to use when creating the next block.
-const DEFAULT_MAX_ADDRESSES: usize = 16 * 1024;
+// TODO adjust parameters
+// To produce 10k+ tx blocks, we need the tracked tx map to hold at least 30k+ addresses
+const DEFAULT_MAX_ADDRESSES: usize = 32 * 1024;
 
-const DEFAULT_MAX_TXS: usize = 64 * 1024;
+const DEFAULT_MAX_TXS: usize = 256 * 1024;
 
-const DEFAULT_MAX_EIP2718_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_EIP2718_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TrackedTxLimitsConfig {

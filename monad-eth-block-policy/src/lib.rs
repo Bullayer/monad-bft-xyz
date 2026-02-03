@@ -439,9 +439,10 @@ where
                     block_txn_cost =?block_txn_fees.max_txn_cost,
                     "TFM disabled. block can not be accepted insufficient balance"
                 );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
+                // TODO rollback
+                // return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                //     BlockPolicyBlockValidatorError::InsufficientBalance,
+                // ));
             }
 
             // 更新账户余额，扣除交易费用
@@ -492,9 +493,10 @@ where
                     self.block_seq_num,
                     eth_address,
                 );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
+                // TODO rollback
+                // return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                //     BlockPolicyBlockValidatorError::InsufficientBalance,
+                // ));
             }
             // 计算第一笔交易的总成本（价值+gas）
             let first_txn_cost = block_txn_fees
@@ -581,7 +583,6 @@ where
         };
 
         // 如果 TFM（交易费用模块）未启用，则使用旧的交易费用计算方式
-        println!("{} {}", self.execution_chain_revision.execution_chain_params().tfm_enabled, "====== check tfm_enabled ======");
         if !self
             .execution_chain_revision
             .execution_chain_params()
@@ -596,9 +597,10 @@ where
                     ?txn,
                     "TFM disabled. txn can not be accepted insufficient balance"
                 );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
+                // TODO rollback
+                // return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                //     BlockPolicyBlockValidatorError::InsufficientBalance,
+                // ));
             }
 
             let estimated_balance = account_balance.balance.saturating_sub(txn_cost);
@@ -640,20 +642,20 @@ where
         if is_emptying_transaction {
             // 空化交易：从账户余额中扣除费用
             let txn_max_gas = compute_txn_max_gas_cost(txn, self.base_fee);
-            // TODO rollback
-            // if account_balance.balance < txn_max_gas {
-            //     trace!(
-            //         seq_num =?self.block_seq_num,
-            //         ?account_balance,
-            //         ?txn_max_gas,
-            //         ?txn,
-            //         ?is_emptying_transaction,
-            //         "Emptying txn can not be accepted insufficient reserve balance"
-            //     );
-            //     return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-            //         BlockPolicyBlockValidatorError::InsufficientBalance,
-            //     ));
-            // }
+            if account_balance.balance < txn_max_gas {
+                trace!(
+                    seq_num =?self.block_seq_num,
+                    ?account_balance,
+                    ?txn_max_gas,
+                    ?txn,
+                    ?is_emptying_transaction,
+                    "Emptying txn can not be accepted insufficient reserve balance"
+                );
+                // TODO rollback
+                // return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
+                //     BlockPolicyBlockValidatorError::InsufficientBalance,
+                // ));
+            }
 
             // 计算交易的最大成本（包括价值和gas费用）
             let txn_max_cost = compute_txn_max_value(txn, self.base_fee);
@@ -1272,6 +1274,7 @@ where
         txn: &Recovered<TxEnvelope>,
         account_nonces: &mut BTreeMap<&Address, u64>,
     ) -> Result<(), BlockPolicyError> {
+        let tx_hash = txn.tx_hash();
         let eth_address = txn.signer();
         let txn_nonce = txn.nonce();
 
@@ -1283,7 +1286,8 @@ where
             warn!(
                 txn_nonce = ?txn_nonce,
                 expected_nonce = ?expected_nonce,
-                "block not coherent, invalid nonce"
+                "block not coherent, invalid nonce, sender: {:?}, tx_hash: {:?}",
+                eth_address, tx_hash
             );
             return Err(BlockPolicyError::BlockNotCoherent);
         }
@@ -1513,6 +1517,9 @@ where
         self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
 
         // 遍历并验证区块中的每笔交易
+        if block.validated_txns.len() > 0 {
+            tracing::info!("====== validated_txns: {}, block: {:?}", block.validated_txns.len(), block.header());
+        }
         for txn in block.validated_txns.iter() {
             // 验证并更新交易发送者的nonce
             self.nonce_check_and_update(txn, &mut account_nonces)?;

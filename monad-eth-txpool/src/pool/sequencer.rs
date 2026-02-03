@@ -297,14 +297,15 @@ impl<'a> ProposalSequencer<'a> {
                 .collect(),
         };
         if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx) {
-            debug!(
+            tracing::info!(
                 ?error,
                 signer = ?tx.raw().signer(),
                 gas_limit = ?tx.gas_limit(),
                 value = ?tx.raw().value(),
                 gas_fee = ?tx.raw().max_fee_per_gas(),
                 "insufficient balance");
-            return false;
+            // TODO rollback
+            // return false;
         }
 
         proposal.total_gas += tx.gas_limit();

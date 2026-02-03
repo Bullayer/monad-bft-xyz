@@ -136,6 +136,7 @@ impl TrackedTxList {
     ) -> Option<&ValidEthTransaction> {
         if tx.nonce() < self.account_nonce {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
+            tracing::warn!(nonce = tx.nonce(), account_nonce = self.account_nonce, tx.hash = ?tx.hash(), "TXPOOL DROP: NonceTooLow");
             return None;
         }
 
@@ -157,6 +158,7 @@ impl TrackedTxList {
                 ) && !tx.has_higher_priority(existing_tx, last_commit_base_fee)
                 {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+                tracing::warn!(tx_hash = ?tx.hash(), existing_tx_hash = ?existing_tx.hash(), "TXPOOL DROP: ExistingHigherPriority");
                     return None;
                 }
 
@@ -164,6 +166,8 @@ impl TrackedTxList {
                 limit_tracker.remove_tx(existing_tx);
 
                 event_tracker.replace(tx.signer(), existing_tx.hash(), tx.hash(), tx.is_owned());
+
+                tracing::info!(nonce = tx.nonce(), tx_hash = ?tx.hash(), "TXPOOL INSERT: replaced");
 
                 entry.insert((tx, event_tracker.now));
 

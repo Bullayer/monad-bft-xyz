@@ -57,7 +57,7 @@ use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ET
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use tracing::{debug, trace, trace_span, warn};
+use tracing::{debug, info, trace, trace_span, warn};
 
 pub mod error;
 
@@ -347,6 +347,9 @@ where
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
         let num_txs = transactions.len();
+        if num_txs >0  {
+            info!("====== validate body - num_txs: {}, block: {:?}", num_txs, header.seq_num.0);
+        }
         if num_txs > chain_params.tx_limit {
             return Err(PayloadError::ExceededNumTxnLimit { num_txs }.into());
         }
@@ -368,10 +371,13 @@ where
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
                 let signer = tx.secp256k1_recover()?;
+                // tracing::info!(?signer, "====== recovered signer ====== {}", transactions.len());
                 Ok(Recovered::new_unchecked(tx.clone(), signer))
             })
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(TxnError::SignerRecoveryError)?;
+
+        tracing::info!("====== total recovered signer - amount: {}", transactions.len());
 
         let (system_txns, eth_txns) = match SystemTransactionValidator::extract_system_transactions(
             header,

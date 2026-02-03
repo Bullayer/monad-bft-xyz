@@ -26,3 +26,8 @@ perf.data*
 deployed_contracts.json
 
 .DS_Store
+
+.history
+**/config/forkpoint/
+**/config/ledger/
+**/config/wal_*

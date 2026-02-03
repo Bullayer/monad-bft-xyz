@@ -152,11 +152,11 @@ if !withdrawals.is_empty() { return Err(PayloadError::NonEmptyWithdrawals(...));
 ### 2. 区块限制检查
 
 ```txt
-| 检查项 | 配置项 | 错误类型 |
-|--------|--------|----------|
-| 交易数量 | `chain_params.tx_limit` | `PayloadError::ExceededNumTxnLimit` |
-| 总 Gas 消耗 | `chain_params.proposal_gas_limit` | `PayloadError::ExceededBlockGasLimit` |
-| 提案大小 | `chain_params.proposal_byte_limit` | `PayloadError::ExceededBlockSizeLimit` |
+| 检查项 | 配置项 | 错误类型 | 默认 |
+|--------|--------|----------| ------|
+| 交易数量 | `chain_params.tx_limit` | `PayloadError::ExceededNumTxnLimit` | 5000 |
+| 总 Gas 消耗 | `chain_params.proposal_gas_limit` | `PayloadError::ExceededBlockGasLimit` | 200000000 (~20MB) |
+| 提案大小 | `chain_params.proposal_byte_limit` | `PayloadError::ExceededBlockSizeLimit` | 2000000 (~200KB) |
 ```
 
 ### 3. 交易签名恢复

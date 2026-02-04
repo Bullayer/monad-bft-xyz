@@ -100,9 +100,9 @@ let peer_discovery_builder = PeerDiscoveryBuilder {
         rng: ChaCha8Rng::from_entropy(),    // 随机数
     }
 ```
-#### 构建PeerDiscovery并运行
+#### 构建PeerDiscovery
 
-由`PeerDiscoveryBuilder`的`build`初始化`PeerDiscovery`并开始与引导节点建立连接
+由`PeerDiscoveryBuilder`的`build`初始化`PeerDiscovery`并尝试与引导节点建立连接
 
 这时`node.toml`的配置全部加载进来,参数生效:
 1. 判定本节点的初始角色Role

@@ -372,9 +372,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
     } else if !missing_validators.is_empty() {
         // 情况B：节点数足够 → 定向查找（只查找缺失的验证者）
         for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
-            debug!(
-                ?validator_id,
-                "sending targeted peer lookup for missing validator"
+            debug!(?validator_id, "sending targeted peer lookup for missing validator"
             );
             cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, false));
         }
@@ -387,10 +385,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         if let Some(validators) = self.epoch_validators.get(&self.current_epoch) {
             if let Some(peer) = chosen_peers.last() {
                 if let Some(random_validator) = validators.iter().choose(&mut self.rng) {
-                    trace!(
-                        ?random_validator,
-                        "full node sending open discovery to random validator"
-                    );
+                    trace!(?random_validator, "full node sending open discovery to random validator");
                     // open_discovery = true：查找该验证者的同时，获取其已知的所有节点
                     cmds.extend(self.send_peer_lookup_request(*peer, *random_validator, true));
                 }
@@ -409,8 +404,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
             .filter(|(_, info)| info.status == SecondaryRaptorcastConnectionStatus::Connected)
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
-        self.metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES] =
-            connected_public_full_nodes.len() as u64;
+        self.metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES] = connected_public_full_nodes.len() as u64;
     }
 
     // ==================== 阶段7：更新指标并重置定时器 ====================

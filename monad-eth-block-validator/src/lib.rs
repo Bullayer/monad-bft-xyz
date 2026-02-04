@@ -216,7 +216,7 @@ where
             timestamp,
             mix_hash,
             nonce,
-            base_fee_per_gas,
+            base_fee_per_gas: _,
             extra_data,
             blob_gas_used,
             excess_blob_gas,
@@ -347,7 +347,7 @@ where
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
         let num_txs = transactions.len();
-        if num_txs >0  {
+        if num_txs > 0  {
             info!("====== validate body - num_txs: {}, block: {:?}", num_txs, header.seq_num.0);
         }
         if num_txs > chain_params.tx_limit {

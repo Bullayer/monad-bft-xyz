@@ -47,7 +47,7 @@ max_num_peers = 200                   最大peer数量
 enable_publisher = false    如果本节点是验证者,决定是ValidatorNone还是ValidadorPublisher
 enable_client = false       如果本节点是FullNode, 决定是FullNodeNonde还是FullNodeClient
 
-[[fullnode_raptorcast.full_nodes_prioritized]] 初始优先节点
+[fullnode_raptorcast.full_nodes_prioritized] 初始优先节点
 
 [network]
 bind_address_host = "0.0.0.0"
@@ -507,16 +507,39 @@ else if (self.self_role == ValidatorNone || self.self_role == ValidatorPublisher
 核心方法: `PeerDiscovery.update_current_round(self, round, epoch)`
 
 ```rust
-// 当节点晋升为验证者时
-if (self.self_role == PeerDiscoveryRole::FullNodeNone || self.self_role == PeerDiscoveryRole::FullNodeClient)
-    && self.check_current_epoch_validator(&self.self_id)
-{
-    if self.enable_publisher {
-        self.self_role = PeerDiscoveryRole::ValidatorPublisher;
-    } else {
-        self.self_role = PeerDiscoveryRole::ValidatorNone;
+fn update_current_round(&mut self, round: Round, epoch: Epoch,) -> Vec<PeerDiscoveryCommand<ST>> {
+        let cmds = Vec::new();
+
+        // 更新round
+        if round > self.current_round {
+            trace!(?round, "updating current round in peer discovery");
+            self.current_round = round;
+        }
+
+        // 更新epoch
+        if epoch > self.current_epoch {
+            debug!(?epoch, "updating current epoch in peer discovery");
+            self.current_epoch = epoch;
+
+            // 当节点晋升为验证者时,设置新角色
+            if (self.self_role == PeerDiscoveryRole::FullNodeNone
+                || self.self_role == PeerDiscoveryRole::FullNodeClient)
+                && self.check_current_epoch_validator(&self.self_id)
+            {
+                debug!(?epoch, ?self.enable_publisher, "full node promoted to validator");
+                if self.enable_publisher {
+                    self.self_role = PeerDiscoveryRole::ValidatorPublisher;
+                } else {
+                    self.self_role = PeerDiscoveryRole::ValidatorNone;
+                }
+                // 清理二级广播的连接信息,只变更状态不移除
+                self.clear_connection_info();
+            }
+        }
+
+        // 清理过期epoch-validators
+        self.epoch_validators.retain(|epoch, _| *epoch + Epoch(1) >= self.current_epoch);
+
+        cmds
     }
-    // 清理二级广播的连接信息
-    self.clear_connection_info();
-}
 ```

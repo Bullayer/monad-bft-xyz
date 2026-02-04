@@ -17,8 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ========== Step 1: 获取参数 ==========
     let args: Vec<String> = std::env::args().collect();
+    // 调整为本地内存池文件路径
     let ipc_path = "/Users/lewis/RustroverProjects/monad-bft-xyz/monad-bull/config/mempool.sock".to_string();
+    // 默认
     let chain_id: u64 = 20143;
+    // 命令行显示传入的第 1 个参数 - 交易数量，默认1
     let num_txs: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
 
     // 验证路径存在

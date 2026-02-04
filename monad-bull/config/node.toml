@@ -11,7 +11,7 @@
 beneficiary = "0x0000000000000000000000000000000000000000"
 node_name = "dev-node"
 network_name = "devnet"
-ipc_tx_batch_size = 500
+ipc_tx_batch_size = 5000
 ipc_max_queued_batches = 6
 # must be <= ipc_max_queued_batches
 ipc_queued_batches_watermark = 3
@@ -36,10 +36,10 @@ peers = []
 # name_record_sig = "6a332aff5406ecd3ebe8f69153d1cb83393af8edcd2482b40e282b87949304af546c5bcdb507e84e20a2165f45917cce309d21a7b0b44f01fa143922bed056a401"
 
 [peer_discovery]
-self_address = "192.168.2.103:8000"
+self_address = "0.0.0.0:8000"
 self_record_seq_num = 0
-self_name_record_sig = "c98647175522973cc67e5851a0a3ab472a6b7b11f93fe3a1db38fe7d086f3aa3466b5bd2b13b8996d9593e1d3cf07682d366441b5cd1d4db63f049e351e649b300"
-# self_name_record_sig = "c2d0e176fa2041ae8437f419ca4363f925cf120095a5800130ab168c94d5425c2d8bcaf0a265ada3950274a2d6769d799ae209f69ae827254ac30256a65aa95e01"
+# self_name_record_sig = "c98647175522973cc67e5851a0a3ab472a6b7b11f93fe3a1db38fe7d086f3aa3466b5bd2b13b8996d9593e1d3cf07682d366441b5cd1d4db63f049e351e649b300"
+self_name_record_sig = "85663053b3d719985357b56270ba320abadd1c51e10ea06430f3990d81393dc7770ff661c331bd631afca705029b0fd77cc0f48d46b37c8d8523c73c6af1242801"
 refresh_period = 120
 request_timeout = 5
 unresponsive_prune_threshold = 5

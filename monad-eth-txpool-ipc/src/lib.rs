@@ -28,7 +28,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
-const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
+// TODO adjust parameters
+const SOCKET_SEND_TIMEOUT_MS: u64 = 60_000;
+const SOCKET_CHANNEL_BUFFER_SIZE: usize = 512 * 1024;
 
 pub struct EthTxPoolIpcStream {
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
@@ -39,8 +41,8 @@ pub struct EthTxPoolIpcStream {
 
 impl EthTxPoolIpcStream {
     pub fn new(stream: UnixStream, snapshot: EthTxPoolSnapshot) -> Self {
-        let (batch_tx, batch_rx) = mpsc::channel(8 * 1024);
-        let (event_tx, event_rx) = mpsc::channel(8 * 1024);
+        let (batch_tx, batch_rx) = mpsc::channel(SOCKET_CHANNEL_BUFFER_SIZE);
+        let (event_tx, event_rx) = mpsc::channel(SOCKET_CHANNEL_BUFFER_SIZE);
 
         Self {
             tx: event_tx,

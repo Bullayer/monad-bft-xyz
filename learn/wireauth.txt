@@ -24,7 +24,7 @@
 
 **默认参数**:
 - 高水位线: 100,000个会话
-- 低水位线: 10,000个会话  
+- 低水位线: 10,000个会话
 - 握手限速: 2000/秒
 - 单个IP最大会话: 10个
 
@@ -43,3 +43,238 @@
 - 消息分发统计
 
 这是一个专门为区块链网络设计的轻量级、安全的UDP通信协议，重点在于提供认证、加密和DoS保护，同时保持高性能。
+
+------------------------------------------------------
+
+`wireauth` **不是一个通用、独立、被广泛标准化的网络协议名称**（不像 TLS、Noise、QUIC 那样），而是 **Monad 代码里使用的一个“内部网络认证协议 / 机制名”**。
+你这个问题问得很对，因为 **rc_primary / rc_secondary 正是建立在 wireauth 之上的**。
+
+我给你按 **「它是什么 → 解决什么问题 → 协议形态 → 和 TLS / Noise 的关系 → 在 Monad 里的位置」** 来讲清楚。
+
+---
+
+# 一句话先给结论
+
+> **WireAuth 是 Monad 网络层里的“节点身份认证 + 连接绑定协议”，
+> 用来保证：谁在和谁通信、消息是否来自合法验证者。**
+
+📌 它是：
+
+* **点对点连接级认证**
+* **不是加密隧道标准**
+* **不是共识协议**
+* **而是网络层的 trust gate**
+
+---
+
+# 一、为什么 Monad 需要 WireAuth？
+
+你先想一个问题：
+
+> 在 rc_primary 里，如果一个恶意节点能随便给你发“伪造 proposal / vote”，会怎样？
+
+结果是：
+
+* 共识层被 DoS
+* CPU 被签名验证打爆
+* leader 被拖垮
+
+📌 **所以：共识消息必须在“进入系统前”就被身份过滤**
+
+这正是 WireAuth 的使命。
+
+---
+
+# 二、WireAuth 解决的核心问题
+
+### 1️⃣ 节点身份认证（不是账户）
+
+* 身份 = **验证者网络公钥**
+* 不是 TLS 证书
+* 不是 IP
+* 不是账户地址
+
+```text
+node_id = hash(consensus_pubkey)
+```
+
+---
+
+### 2️⃣ 连接绑定（connection binding）
+
+> **“这条 TCP / QUIC 连接，只允许这个 node_id 使用”**
+
+一旦绑定完成：
+
+* 后续消息不再反复验签
+* 直接信任连接来源
+
+📌 这是高性能的关键。
+
+---
+
+### 3️⃣ 防止网络层攻击
+
+* spoofed packets
+* replay
+* non-validator flood
+
+---
+
+# 三、WireAuth 的协议形态（工程级）
+
+> **WireAuth = 轻量级 handshake + session authentication**
+
+一个典型流程（简化）：
+
+```text
+A → B: hello, node_id_A, nonce
+A → B: signature_A(nonce || session_info)
+
+B:
+  - 校验 signature
+  - 校验 node_id 是否在 validator set
+  - 绑定 connection → node_id_A
+```
+
+完成后：
+
+```text
+(connection_fd) → authenticated node A
+```
+
+📌 **后续消息不再携带签名**
+
+---
+
+# 四、WireAuth 是不是加密协议？
+
+❌ **不是**
+
+WireAuth 本身：
+
+* 不负责 payload encryption
+* 不负责 key exchange
+* 不负责 forward secrecy
+
+通常组合方式是：
+
+```text
+Transport: TCP / QUIC
+Encryption: TLS / Noise（可选）
+Authentication: WireAuth
+```
+
+📌 **WireAuth 解决的是“你是谁”，不是“别人能不能看”**
+
+---
+
+# 五、WireAuth vs TLS / Noise（非常关键的区分）
+
+| 对比项    | WireAuth | TLS / Noise |
+| ------ | -------- | ----------- |
+| 目标     | 节点身份     | 数据加密        |
+| 身份来源   | 验证者公钥    | CA / PSK    |
+| 是否绑定共识 | 是        | 否           |
+| 是否轻量   | 极轻       | 相对重         |
+| 是否标准   | 否        | 是           |
+
+📌 **WireAuth 是“共识感知的认证”**
+
+---
+
+# 六、WireAuth 在 Monad 网络栈中的位置
+
+```text
+┌────────────────────────────┐
+│   Consensus / Execution    │
+├────────────────────────────┤
+│   rc_primary / secondary   │
+├────────────────────────────┤
+│   WireAuth (auth layer)    │  ← 你问的这个
+├────────────────────────────┤
+│   Transport (TCP/QUIC)     │
+└────────────────────────────┘
+```
+
+---
+
+# 七、为什么 rc_primary 特别依赖 WireAuth？
+
+因为 rc_primary：
+
+* 消息小
+* 消息频繁
+* 对延迟极度敏感
+
+如果每条消息都：
+
+```text
+verify_signature(msg)
+```
+
+→ 共识直接慢一个数量级。
+
+📌 **WireAuth 用“一次 handshake，换无限条可信消息”**
+
+---
+
+# 八、这和 Cosmos / Ethereum 的区别
+
+### Ethereum
+
+* P2P：devp2p + RLPx
+* 身份：节点 key
+* 共识消息 ≠ P2P 消息
+
+👉 没有共识感知的 auth 层
+
+---
+
+### Cosmos / Tendermint
+
+* P2P ID
+* Validator pubkey 另算
+* 网络层和共识层耦合较弱
+
+---
+
+### Monad
+
+> **网络层直接服务共识**
+
+WireAuth = 为共识定制的网络身份层。
+
+---
+
+# 九、如果你自己设计一条链（给你直接抽象）
+
+你可以把 WireAuth 抽象成一个 trait：
+
+```rust
+trait WireAuth {
+    fn authenticate(conn, peer_pubkey) -> AuthenticatedConn;
+}
+```
+
+核心 invariant：
+
+```text
+未经认证的连接
+→ 不允许进入共识消息路径
+```
+
+---
+
+# 十、一句话终极总结
+
+> **WireAuth 不是通用网络协议，
+> 而是 Monad 为高性能共识定制的“节点级认证握手协议”。**
+
+如果你愿意，下一步我可以：
+
+* **结合 Monad 源码，逐行拆 wireauth handshake**
+* 对比 **RLPx / libp2p Noise / QUIC TLS**
+* 或帮你设计一套 **“rc_primary + WireAuth + RaptorCast” 的完整网络栈**
+
+你现在已经在拆 **Monad 的核心工程机理** 了。

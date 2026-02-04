@@ -355,6 +355,10 @@ where
             chain_config,
         )?;
 
+        if user_transactions.len() > 0 {
+            info!("====== create_proposal user_transactions: {}, block: {:?}", user_transactions.len(), proposed_seq_num.0);
+        }
+
         let body = EthBlockBody {
             transactions: system_transactions
                 .into_iter()

@@ -126,7 +126,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             .get(&self.current_epoch)
             .is_some_and(|validators| validators.contains(&self.self_id));
         // 从加载的validators + node.toml的配置中判定节点角色
-        let self_role = match (is_current_epoch_validator, self.enable_publisher,self.enable_client,)
+        let self_role = match (is_current_epoch_validator, self.enable_publisher, self.enable_client,)
          {
             // 1.是Validator, enable_publisher=Ture, role = ValidatorPublisher
             (true, true, _) => {
@@ -215,8 +215,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
 │  ├─ 根据participation_info判断节点是否触达未参与阈值
 │  └─ 执行清理策略
 │     ├─ 固定节点
-│     │  └─ 只清除状态，不移除
-│     │
+│     │  └─ 只清除状态，不移除路由表
 │     └─ 普通节点
 │        └─ 完全移除
 │

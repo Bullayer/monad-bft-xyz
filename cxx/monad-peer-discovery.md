@@ -345,12 +345,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         .get(&self.current_epoch)
         .into_iter()
         .flatten()
-        .chain(
-            self.epoch_validators
-                .get(&(self.current_epoch + Epoch(1)))
-                .into_iter()
-                .flatten(),
-        )
+        .chain(self.epoch_validators.get(&(self.current_epoch + Epoch(1))).into_iter().flatten(),)
         .filter(|validator| {
             !self.routing_info.contains_key(validator) && *validator != &self.self_id
         })
@@ -370,17 +365,15 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
             cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, true));
         }
     } else if !missing_validators.is_empty() {
-        // 情况B：节点数足够 → 定向查找（只查找缺失的验证者）
+        // 情况B：节点数足够 → 定向查找（只查找缺失的验证者）, open-discovery设置为false
         for (validator_id, peer) in missing_validators.iter().zip(chosen_peers.iter()) {
-            debug!(?validator_id, "sending targeted peer lookup for missing validator"
-            );
+            debug!(?validator_id, "sending targeted peer lookup for missing validator");
             cmds.extend(self.send_peer_lookup_request(*peer, *validator_id, false));
         }
     }
 
     // ==================== 阶段5：全节点开放发现更新验证者信息 ====================
-    if self.self_role == PeerDiscoveryRole::FullNodeNone
-        || self.self_role == PeerDiscoveryRole::FullNodeClient
+    if self.self_role == PeerDiscoveryRole::FullNodeNone || self.self_role == PeerDiscoveryRole::FullNodeClient
     {
         if let Some(validators) = self.epoch_validators.get(&self.current_epoch) {
             if let Some(peer) = chosen_peers.last() {
@@ -397,7 +390,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
     if self.self_role == PeerDiscoveryRole::FullNodeClient {
         cmds.extend(self.look_for_upstream_validators());
     } else if self.self_role == PeerDiscoveryRole::ValidatorPublisher {
-        // 收集下游全节点连接数指标
+        // 收集下游全节点连接情况
         let connected_public_full_nodes = self
             .participation_info
             .iter()
@@ -415,9 +408,7 @@ fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
     cmds.extend(self.reset_refresh_timer());
     
     // 导出指标
-    cmds.push(PeerDiscoveryCommand::MetricsCommand(
-        PeerDiscoveryMetricsCommand(self.metrics.clone()),
-    ));
+    cmds.push(PeerDiscoveryCommand::MetricsCommand(PeerDiscoveryMetricsCommand(self.metrics.clone()),));
 
     cmds
 }

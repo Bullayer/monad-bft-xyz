@@ -11,13 +11,13 @@
 beneficiary = "0x0000000000000000000000000000000000000000"
 node_name = "dev-node"
 network_name = "devnet"
-ipc_tx_batch_size = 5000
-ipc_max_queued_batches = 6
+ipc_tx_batch_size = 5000                                # 每批 5000 tx 按内存池拒绝大小来
+ipc_max_queued_batches = 100                            # 最大队列 
 # must be <= ipc_max_queued_batches
-ipc_queued_batches_watermark = 3
+ipc_queued_batches_watermark = 60                       # 批数据队列预警与限流
 
-statesync_threshold = 600
-statesync_max_concurrent_requests = 5
+statesync_threshold = 1000
+statesync_max_concurrent_requests = 50
 
 #########################################################
 # Network-wide configuration

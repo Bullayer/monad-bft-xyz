@@ -5674,7 +5674,9 @@ dependencies = [
  "monad-executor-glue",
  "monad-types",
  "monad-validator",
+ "serde",
  "tokio",
+ "toml",
  "tracing",
 ]
 

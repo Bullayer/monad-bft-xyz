@@ -20,6 +20,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
+    time::SystemTime,
 };
 
 use futures::Stream;
@@ -41,6 +42,18 @@ use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, trace, warn};
+extern crate serde;
+use serde::Serialize;
+
+// 添加 TPS 数据结构
+#[derive(Serialize)]
+struct TpsRecord {
+    window_tps: f64,
+    window_tx_count: u64,
+    window_start_block: u64,
+    window_end_block: u64,
+    timestamp: u64,
+}
 
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
@@ -51,6 +64,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     bft_block_persist: FileBlockPersist<ST, SCT, EthExecutionProtocol>,
+    ledger_path: PathBuf, // 用于存储 TPS 数据
 
     metrics: ExecutorMetrics,
     last_commit: Option<(SeqNum, Round)>,
@@ -86,6 +100,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(ledger_path: PathBuf) -> Self {
+        let ledger_path_clone = ledger_path.clone();
         match std::fs::create_dir(&ledger_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
@@ -97,6 +112,7 @@ where
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
             bft_block_persist,
+            ledger_path: ledger_path_clone,
 
             metrics: Default::default(),
             last_commit: None,
@@ -308,7 +324,7 @@ where
                     self.tps_window_block_count += 1;
 
                     // 达到窗口大小时计算 TPS
-                    if self.tps_window_block_count >= TPS_WINDOW_SIZE {
+                    if self.tps_window_block_count > TPS_WINDOW_SIZE {
                         
                         let window_elapsed_blocks = block_num - self.tps_window_start_block;
                         let window_total_tx = self.tps_window_tx_count;
@@ -319,7 +335,31 @@ where
                         window_tx_count = window_total_tx;
 
                         info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, "====== window tps");
+                        
 
+                        // 写入 TPS 数据到文件
+                        let tps_path = {
+                            let mut path = self.ledger_path.clone();
+                            path.push("tps");
+                            std::fs::create_dir_all(&path).ok(); // 创建 tps 目录
+                            path.join(format!("tps.{}.{}", self.tps_window_start_block, block_num))
+                        };
+
+                        let tps_record = TpsRecord {
+                            window_tps,
+                            window_tx_count,
+                            window_start_block: self.tps_window_start_block,
+                            window_end_block: block_num,
+                            timestamp: SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+
+                        // 写入数据，并使用 ok() 避免写入失败时 panic
+                        let content = toml::to_string(&tps_record).unwrap_or_default();
+                        std::fs::write(&tps_path, content).ok(); 
+                        
                         // 重置窗口
                         self.tps_window_start_block = block_num;
                         self.tps_window_tx_count = num_tx;

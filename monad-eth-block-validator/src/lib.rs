@@ -348,7 +348,7 @@ where
         // no need to individually validate transactions
         let num_txs = transactions.len();
         if num_txs > 0  {
-            info!("====== validate body - num_txs: {}, block: {:?}", num_txs, header.seq_num.0);
+            // info!("====== validate body - num_txs: {}, block: {:?}", num_txs, header.seq_num.0);
         }
         if num_txs > chain_params.tx_limit {
             return Err(PayloadError::ExceededNumTxnLimit { num_txs }.into());
@@ -377,7 +377,7 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(TxnError::SignerRecoveryError)?;
 
-        tracing::info!("====== total recovered signer - amount: {}", transactions.len());
+        // tracing::info!("====== total recovered signer - amount: {}", transactions.len());
 
         let (system_txns, eth_txns) = match SystemTransactionValidator::extract_system_transactions(
             header,

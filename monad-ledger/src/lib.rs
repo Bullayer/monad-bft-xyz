@@ -27,6 +27,7 @@ use monad_block_persist::{BlockPersist, FileBlockPersist};
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
+use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
@@ -66,6 +67,11 @@ where
     >,
 
     phantom: PhantomData<ST>,
+
+    // 滑动窗口 TPS 统计
+    tps_window_start_block: u64,
+    tps_window_tx_count: u64,
+    tps_window_block_count: u64,
 }
 
 const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
@@ -105,6 +111,11 @@ where
             fetches,
 
             phantom: PhantomData,
+
+            // 滑动窗口 TPS 统计
+            tps_window_start_block: 0,
+            tps_window_tx_count: 0,
+            tps_window_block_count: 0,
         }
     }
 
@@ -273,7 +284,51 @@ where
                     let block_id = block.get_id();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
-                    info!(num_tx, block_num, "committed block");
+
+                    // calc TPS per block
+                    let mut commited_tps = 0f64;
+                    let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
+                    if num_tx > 0 {
+                        commited_tps = num_tx as f64 / vote_delay.as_secs_f64();
+                    }
+
+                    // 滑动窗口 TPS 统计（每 N 个区块计算一次）
+                    const TPS_WINDOW_SIZE: u64 = 100;
+                    let mut window_tps = 0f64;
+                    let mut window_tx_count = 0u64;
+                    let prev_window_block_count = self.tps_window_block_count;
+
+                    // 直接从当前区块开始
+                    if self.tps_window_start_block == 0 {
+                        self.tps_window_start_block = block_num;
+                    }
+
+                    // 累加数据到当前窗口
+                    self.tps_window_tx_count += num_tx;
+                    self.tps_window_block_count += 1;
+
+                    // 达到窗口大小时计算 TPS
+                    if self.tps_window_block_count >= TPS_WINDOW_SIZE {
+                        
+                        let window_elapsed_blocks = block_num - self.tps_window_start_block;
+                        let window_total_tx = self.tps_window_tx_count;
+                        if window_elapsed_blocks > 0 {
+                            // TPS = 总交易数 / 时间跨度(区块数 * vote_delay)
+                            window_tps = window_total_tx as f64 / (window_elapsed_blocks as f64 * vote_delay.as_secs_f64());
+                        }
+                        window_tx_count = window_total_tx;
+
+                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, "====== window tps");
+
+                        // 重置窗口
+                        self.tps_window_start_block = block_num;
+                        self.tps_window_tx_count = num_tx;
+                        self.tps_window_block_count = 1;
+                    }
+
+                    let metrics_num_tx = self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS];
+                    info!(num_tx, block_num, commited_tps, metrics_num_tx, "committed block");
+
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += num_tx;
                     self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = block_num;
 

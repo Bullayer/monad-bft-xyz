@@ -91,6 +91,7 @@ fn main() {
 
     // thread.txt
     let runtime = tokio::runtime::Builder::new_multi_thread()  // 创建多线程运行时构建器
+        .worker_threads(8)                                          // 设置工作线程数
         .enable_all()                                           // 启用所有 I/O 驱动和时间驱动
         .build()                                               // 构建运行时实例
         .map_err(Into::into)                                   // 将构建错误转换为 NodeSetupError
@@ -391,103 +392,135 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             let mut address_index: usize = 0;
 
             loop {
+                // 封装每次迭代为独立 async 块，便于捕获异常
+                let iteration = async {
+                    // 停顿个出块事件再继续构造数据
+                    tokio::time::sleep(vote_delay).await;
 
-                // 停顿个出块事件再继续构造数据
-                tokio::time::sleep(vote_delay).await;
+                    // 从共享变量拿到最新的 epoch
+                    let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
+                    let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
 
-                // 从共享变量拿到最新的 epoch
-                let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
-                let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
-
-                // 检查并重建连接（如果断开或不存在）
-                if ipc_stream.is_none() {
-                    match UnixStream::connect(&mempool_ipc_path).await {
-                        Ok(stream) => {
-                            ipc_stream = Some(stream);
-                            info!(path = %mempool_ipc_path.display(), "IPC connection established");
-                        }
-                        Err(e) => {
-                            error!(path = %mempool_ipc_path.display(), error = %e, "Failed to connect to IPC");
-                            continue;
+                    // 检查并重建连接（如果断开或不存在）
+                    if ipc_stream.is_none() {
+                        match UnixStream::connect(&mempool_ipc_path).await {
+                            Ok(stream) => {
+                                ipc_stream = Some(stream);
+                                info!(path = %mempool_ipc_path.display(), "IPC connection established");
+                            }
+                            Err(e) => {
+                                error!(path = %mempool_ipc_path.display(), error = %e, "Failed to connect to IPC");
+                                return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                            }
                         }
                     }
-                }
 
-                // 使用 BufWriter 优化写入性能
-                let mut writer = BufWriter::new(ipc_stream.as_mut().unwrap());
+                    // 使用 BufWriter 优化写入性能
+                    let mut writer = BufWriter::new(ipc_stream.as_mut().unwrap());
 
-                use alloy_eips::eip2718::Encodable2718;
+                    use alloy_eips::eip2718::Encodable2718;
 
-                let strategy = get_tx_strategy(current_epoch);
-                if !strategy.enabled {
-                    info!(epoch = current_epoch, "Fill disabled for this epoch");
-                    continue;
-                }
+                    let strategy = get_tx_strategy(current_epoch);
+                    if !strategy.enabled {
+                        info!(epoch = current_epoch, "Fill disabled for this epoch");
+                        return Ok(());
+                    }
 
-                let num_txs = strategy.num_txs;
-                if num_txs > addresses_clone.len() {
-                    error!("====== enlarge address pool - num_txs > addresses_clone.len(), num_txs: {}, addresses_clone.len: {}", num_txs, addresses_clone.len());
-                    continue;
-                }
+                    let num_txs = strategy.num_txs;
+                    if num_txs > addresses_clone.len() {
+                        error!("====== enlarge address pool - num_txs > addresses_clone.len(), num_txs: {}, addresses_clone.len: {}", num_txs, addresses_clone.len());
+                        return Ok(());
+                    }
 
-                let gas_limit = strategy.gas_limit;
-                let input_len = strategy.input_len;
-                let gas_price: u128 = 100_000_000_000u128.into();
+                    let gas_limit = strategy.gas_limit;
+                    let input_len = strategy.input_len;
+                    let gas_price: u128 = 100_000_000_000u128.into();
 
-                let now = Instant::now();
+                    let now = Instant::now();
 
-                // 批量收集交易数据
-                let mut batch_data = Vec::with_capacity(num_txs);
+                    // 批量收集交易数据
+                    let mut batch_data = Vec::with_capacity(num_txs);
 
-                for _ in 0..num_txs {
+                    for _ in 0..num_txs {
 
-                    // 使用当前索引的地址
-                    let (_address, secret) = &addresses_clone[address_index];
+                        // 使用当前索引的地址
+                        let (_address, secret) = &addresses_clone[address_index];
 
-                    // 检查是否需要重置索引（地址池一轮使用完毕）
-                    if address_index + 1 >= addresses_clone.len() {
+                        // 检查是否需要重置索引（地址池一轮使用完毕）
+                        if address_index + 1 >= addresses_clone.len() {
+                            address_index = 0;
+                            info!(address_index, total_addresses = addresses_clone.len(), "====== Address index reset");
+                        } else {
+                            address_index += 1;
+                        }
+
+                        // 从 secret 创建 KeyPair 以获取 pubkey
+                        let mut secret_bytes = secret.as_slice().to_vec();
+                        let kp = match monad_secp::KeyPair::from_bytes(&mut secret_bytes) {
+                            Ok(kp) => kp,
+                            Err(e) => {
+                                error!(error = %e, "Failed to create KeyPair from secret");
+                                return Ok(());
+                            }
+                        };
+                        let _sender = NodeId::new(kp.pubkey());
+
+                        // 构造普通交易
+                        let tx = make_legacy_tx_with_chain_id(
+                            secret.clone(),
+                            gas_price,
+                            gas_limit,
+                            0, // ignore 
+                            input_len,
+                            chain_id,
+                        );
+
+                        let mut encoded = Vec::new();
+                        tx.encode_2718(&mut encoded);
+
+                        // 收集到批量缓冲区
+                        let len = encoded.len() as u32;
+                        batch_data.extend_from_slice(&len.to_be_bytes());
+                        batch_data.extend_from_slice(&encoded);
+                    }
+
+                    // 使用 BufWriter 批量发送
+                    if !batch_data.is_empty() {
+                        if let Err(e) = writer.write_all(&batch_data).await {
+                            error!(error = %e, num_txs, "IPC batch write failed, will reconnect next tick");
+                            ipc_stream = None;
+                        } else if let Err(e) = writer.flush().await {
+                            error!(error = %e, num_txs, "IPC batch flush failed, will reconnect next tick");
+                            ipc_stream = None;
+                        }
+                    }
+
+                    info!(strategy = %strategy.description, epoch = current_epoch, seq_num = current_seq_num, num_txs, address_index, elapsed = now.elapsed().as_millis(), "====== Continuous fill txs done in background");
+
+                    Ok(())
+                };
+
+                // 捕获未知异常，崩溃后自动重启
+                let iteration_future = std::panic::AssertUnwindSafe(iteration);
+                match iteration_future.catch_unwind().await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        error!(error = %e, "Iteration returned error, continuing...");
+                    }
+                    Err(panic_info) => {
+                        if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            error!(panic = %s, "Continuous fill loop panicked");
+                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                            error!(panic = %s, "Continuous fill loop panicked");
+                        } else {
+                            error!(panic = ?panic_info, "Continuous fill loop panicked with unknown error");
+                        }
+                        // 重置状态后重启
+                        ipc_stream = None;
                         address_index = 0;
-                        info!(address_index, total_addresses = addresses_clone.len(), "====== Address index reset");
-                    } else {
-                        address_index += 1;
-                    }
-
-                    // 从 secret 创建 KeyPair 以获取 pubkey
-                    let mut secret_bytes = secret.as_slice().to_vec();
-                    let kp = monad_secp::KeyPair::from_bytes(&mut secret_bytes).unwrap();
-                    let _sender = NodeId::new(kp.pubkey());
-
-                    // 构造普通交易
-                    let tx = make_legacy_tx_with_chain_id(
-                        secret.clone(),
-                        gas_price,
-                        gas_limit,
-                        0, // ignore 
-                        input_len,
-                        chain_id,
-                    );
-
-                    let mut encoded = Vec::new();
-                    tx.encode_2718(&mut encoded);
-
-                    // 收集到批量缓冲区
-                    let len = encoded.len() as u32;
-                    batch_data.extend_from_slice(&len.to_be_bytes());
-                    batch_data.extend_from_slice(&encoded);
-                }
-
-                // 使用 BufWriter 批量发送
-                if !batch_data.is_empty() {
-                    if let Err(e) = writer.write_all(&batch_data).await {
-                        error!(error = %e, num_txs, "IPC batch write failed, will reconnect next tick");
-                        ipc_stream = None;
-                    } else if let Err(e) = writer.flush().await {
-                        error!(error = %e, num_txs, "IPC batch flush failed, will reconnect next tick");
-                        ipc_stream = None;
+                        warn!("Restarting continuous fill loop...");
                     }
                 }
-
-                info!(strategy = %strategy.description, epoch = current_epoch, seq_num = current_seq_num, num_txs, address_index, elapsed = now.elapsed().as_millis(), "====== Continuous fill txs done in background");
             }
         });
     } else {
@@ -1080,15 +1113,15 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         },
         1 => TxStrategy {
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1..=300),
-            input_len: 16,
+            num_txs: rand::thread_rng().gen_range(1..=800),
+            input_len: 500,
             gas_limit: 50_000,
             description: "低负载模式（epoch % 3 == 1）".to_string(),
         },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1000..=3000),
-            input_len: 256,
+            num_txs: rand::thread_rng().gen_range(1000..=5000),
+            input_len: 300,
             gas_limit: 100_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         },

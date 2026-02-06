@@ -74,34 +74,34 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     proposal_byte_limit: 4_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     // vote_pace: Duration::from_millis(1000),
-    vote_pace: Duration::from_secs(5),
+    vote_pace: Duration::from_millis(100),
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
-    tx_limit: 5_000,
+    tx_limit: 10_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     // vote_pace: Duration::from_millis(500),
-    vote_pace: Duration::from_secs(5),
+    vote_pace: Duration::from_millis(100),
 };
 
 const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
-    tx_limit: 5_000,
+    tx_limit: 10_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     // vote_pace: Duration::from_millis(400),
-    vote_pace: Duration::from_secs(5),
+    vote_pace: Duration::from_millis(100),
 };
 
 const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
-    tx_limit: 5_000,
+    tx_limit: 10_000,
     proposal_gas_limit: 200_000_000,
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     // vote_pace: Duration::from_millis(400),
-    vote_pace: Duration::from_secs(5),
+    vote_pace: Duration::from_millis(100),
 };
 
 #[cfg(test)]

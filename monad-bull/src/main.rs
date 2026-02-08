@@ -1,6 +1,8 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap}, marker::PhantomData, net::{IpAddr, SocketAddr, ToSocketAddrs}, path::{Path, PathBuf}, process, sync::{Arc, atomic::{AtomicU64, Ordering}}, thread::sleep, time::{Duration, Instant}
+    collections::{BTreeMap, BTreeSet, HashMap}, marker::PhantomData, net::{IpAddr, SocketAddr, ToSocketAddrs}, process, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}
 };
+
+use bytes::Bytes;
 
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
@@ -14,11 +16,8 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
-use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig, ForwardedTxs};
 use monad_eth_testutil::make_legacy_tx_with_chain_id;
-use alloy_primitives::B256;
-use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent, TxPoolCommand};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -37,7 +36,8 @@ use monad_raptorcast::{
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::{NopStateBackend, StateBackendThreadClient};
-use monad_executor_glue::StateSyncCommand;
+use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent, StateSyncCommand};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
@@ -52,10 +52,9 @@ use monad_wal::wal::WALoggerConfig;
 
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::net::UnixStream;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
+use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use rand::Rng;
@@ -64,8 +63,6 @@ use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
-
-use std::thread;
 
 mod cli;
 mod error;
@@ -363,8 +360,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         let addresses = generate_secrets(50000).await;
 
-        // 优化为 spawn 独立任务，避免阻塞主循环
-        let _command_tx_clone = executor.txpool.command_tx.clone();  // 克隆 Arc 发送器
+        // 直接发送交易到内存池（使用 forwarded_tx）
+        let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
         let addresses_clone = addresses.clone();  // 克隆地址池
         let chain_id = node_state.chain_config.chain_id();
 
@@ -372,58 +369,28 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         let current_epoch_clone = shared_epoch.clone();
         let current_seq_num_clone = shared_seq_num.clone();
 
-        // 根据操作系统选择 IPC 路径前缀
-        let ipc_prefix = if cfg!(target_os = "macos") {
-            "/Users/lewis/RustroverProjects/monad-bft-xyz/"
-        } else {
-            ""  // 默认前缀路径
-        };
-        let mempool_ipc_path = PathBuf::from(ipc_prefix).join(&node_state.mempool_ipc_path);
-        info!(os = std::env::consts::OS, path = %mempool_ipc_path.display(), "IPC path configured");
-
         tokio::spawn(async move {
 
             let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
-
-            // 维护持久 IPC 连接
-            let mut ipc_stream: Option<UnixStream> = None;
 
             // 地址使用索引，循环使用地址池
             let mut address_index: usize = 0;
 
             loop {
+
                 // 封装每次迭代为独立 async 块，便于捕获异常
                 let iteration = async {
                     // 停顿个出块事件再继续构造数据
                     tokio::time::sleep(vote_delay).await;
 
-                    // 从共享变量拿到最新的 epoch
+                    // 从共享变量拿到最新的 epoch / seq_num
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
                     let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
-
-                    // 检查并重建连接（如果断开或不存在）
-                    if ipc_stream.is_none() {
-                        match UnixStream::connect(&mempool_ipc_path).await {
-                            Ok(stream) => {
-                                ipc_stream = Some(stream);
-                                info!(path = %mempool_ipc_path.display(), "IPC connection established");
-                            }
-                            Err(e) => {
-                                error!(path = %mempool_ipc_path.display(), error = %e, "Failed to connect to IPC");
-                                return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
-                            }
-                        }
-                    }
-
-                    // 使用 BufWriter 优化写入性能
-                    let mut writer = BufWriter::new(ipc_stream.as_mut().unwrap());
-
-                    use alloy_eips::eip2718::Encodable2718;
 
                     let strategy = get_tx_strategy(current_epoch);
                     if !strategy.enabled {
                         info!(epoch = current_epoch, "Fill disabled for this epoch");
-                        return Ok(());
+                        return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                     }
 
                     let num_txs = strategy.num_txs;
@@ -438,8 +405,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                     let now = Instant::now();
 
-                    // 批量收集交易数据
-                    let mut batch_data = Vec::with_capacity(num_txs);
+                    // 获取第一个地址的 pubkey 作为 sender（仅用于发送一批交易）
+                    let first_secret = &addresses_clone[0].1;
+                    let mut first_secret_bytes = first_secret.as_slice().to_vec();
+                    let first_kp = monad_secp::KeyPair::from_bytes(&mut first_secret_bytes)
+                        .expect("Failed to create KeyPair from first address");
+                    let sender_pubkey = first_kp.pubkey();
+
+                    // 批量收集交易数据（使用 RLP 编码）
+                    let mut encoded_txs: Vec<Bytes> = Vec::with_capacity(num_txs);
 
                     for _ in 0..num_txs {
 
@@ -454,44 +428,32 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                             address_index += 1;
                         }
 
-                        // 从 secret 创建 KeyPair 以获取 pubkey
-                        let mut secret_bytes = secret.as_slice().to_vec();
-                        let kp = match monad_secp::KeyPair::from_bytes(&mut secret_bytes) {
-                            Ok(kp) => kp,
-                            Err(e) => {
-                                error!(error = %e, "Failed to create KeyPair from secret");
-                                return Ok(());
-                            }
-                        };
-                        let _sender = NodeId::new(kp.pubkey());
-
                         // 构造普通交易
                         let tx = make_legacy_tx_with_chain_id(
                             secret.clone(),
                             gas_price,
                             gas_limit,
-                            0, // ignore 
+                            0, // ignore nonce
                             input_len,
                             chain_id,
                         );
 
-                        let mut encoded = Vec::new();
-                        tx.encode_2718(&mut encoded);
-
-                        // 收集到批量缓冲区
-                        let len = encoded.len() as u32;
-                        batch_data.extend_from_slice(&len.to_be_bytes());
-                        batch_data.extend_from_slice(&encoded);
+                        // 使用 RLP 编码
+                        let encoded = alloy_rlp::encode(&tx);
+                        encoded_txs.push(encoded.into());
                     }
 
-                    // 使用 BufWriter 批量发送
-                    if !batch_data.is_empty() {
-                        if let Err(e) = writer.write_all(&batch_data).await {
-                            error!(error = %e, num_txs, "IPC batch write failed, will reconnect next tick");
-                            ipc_stream = None;
-                        } else if let Err(e) = writer.flush().await {
-                            error!(error = %e, num_txs, "IPC batch flush failed, will reconnect next tick");
-                            ipc_stream = None;
+                    // 直接发送到内存池
+                    if !encoded_txs.is_empty() {
+                        let sender = NodeId::new(sender_pubkey);
+
+                        let forwarded = ForwardedTxs {
+                            sender,
+                            txs: encoded_txs,
+                        };
+
+                        if let Err(e) = forwarded_tx_clone.try_send(vec![forwarded]) {
+                            error!(error = %e, num_txs, "Failed to send txs to forwarded channel");
                         }
                     }
 
@@ -515,8 +477,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         } else {
                             error!(panic = ?panic_info, "Continuous fill loop panicked with unknown error");
                         }
-                        // 重置状态后重启
-                        ipc_stream = None;
                         address_index = 0;
                         warn!("Restarting continuous fill loop...");
                     }

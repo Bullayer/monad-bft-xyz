@@ -71,7 +71,7 @@ where
             >,
         >,
     >>,
-    forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+    pub forwarded_tx: Arc<tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>>,
     event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
@@ -158,7 +158,7 @@ where
             update_metrics,
 
             command_tx: Arc::new(command_tx),
-            forwarded_tx,
+            forwarded_tx: Arc::new(forwarded_tx),
             event_rx,
         }
     }

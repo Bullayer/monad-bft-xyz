@@ -374,6 +374,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         let addresses_clone = addresses.clone();  // 克隆地址池
         let chain_id = node_state.chain_config.chain_id();
 
+        // 获取第一个地址的 pubkey 作为 sender（仅用于发送一批交易）
+        let first_secret = &addresses_clone[0].1;
+        let mut first_secret_bytes = first_secret.as_slice().to_vec();
+        let first_kp = monad_secp::KeyPair::from_bytes(&mut first_secret_bytes)
+            .expect("Failed to create KeyPair from first address");
+        let sender_pubkey = first_kp.pubkey();
+
         // 共享的 epoch 变量（供 spawn 任务读取）
         let current_epoch_clone = shared_epoch.clone();
         let current_seq_num_clone = shared_seq_num.clone();
@@ -389,6 +396,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 // 封装每次迭代为独立 async 块，便于捕获异常
                 let iteration = async {
+
                     // 停顿个出块事件再继续构造数据
                     tokio::time::sleep(vote_delay / 3).await;
 
@@ -413,13 +421,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let gas_price: u128 = 100_000_000_000u128.into();
 
                     let now = Instant::now();
-
-                    // 获取第一个地址的 pubkey 作为 sender（仅用于发送一批交易）
-                    let first_secret = &addresses_clone[0].1;
-                    let mut first_secret_bytes = first_secret.as_slice().to_vec();
-                    let first_kp = monad_secp::KeyPair::from_bytes(&mut first_secret_bytes)
-                        .expect("Failed to create KeyPair from first address");
-                    let sender_pubkey = first_kp.pubkey();
 
                     // 批量收集交易数据（使用 RLP 编码）
                     let mut encoded_txs: Vec<Bytes> = Vec::with_capacity(num_txs);
@@ -1073,23 +1074,23 @@ struct TxStrategy {
 /// 根据 epoch 获取交易策略
 fn get_tx_strategy(epoch: u64) -> TxStrategy {
     match epoch % 3 {
-        0 => TxStrategy {
-            enabled: false,
-            num_txs: 0,
-            input_len: 0,
-            gas_limit: 21_000,
-            description: "空块模式（epoch % 3 == 0）".to_string(),
-        },
-        1 => TxStrategy {
-            enabled: true,
-            num_txs: rand::thread_rng().gen_range(500..=1000),
-            input_len: 300,
-            gas_limit: 50_000,
-            description: "低负载模式（epoch % 3 == 1）".to_string(),
-        },
+        // 0 => TxStrategy {
+        //     enabled: false,
+        //     num_txs: 0,
+        //     input_len: 0,
+        //     gas_limit: 21_000,
+        //     description: "空块模式（epoch % 3 == 0）".to_string(),
+        // },
+        // 1 => TxStrategy {
+        //     enabled: true,
+        //     num_txs: rand::thread_rng().gen_range(500..=1000),
+        //     input_len: 300,
+        //     gas_limit: 50_000,
+        //     description: "低负载模式（epoch % 3 == 1）".to_string(),
+        // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(3000..=8000),
+            num_txs: rand::thread_rng().gen_range(5000..=10000),
             input_len: 300,
             gas_limit: 100_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),

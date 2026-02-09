@@ -390,7 +390,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 // 封装每次迭代为独立 async 块，便于捕获异常
                 let iteration = async {
                     // 停顿个出块事件再继续构造数据
-                    tokio::time::sleep(vote_delay).await;
+                    tokio::time::sleep(vote_delay / 2).await;
 
                     // 从共享变量拿到最新的 epoch / seq_num
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
@@ -1082,14 +1082,14 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         },
         1 => TxStrategy {
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1..=800),
+            num_txs: rand::thread_rng().gen_range(500..=1000),
             input_len: 300,
             gas_limit: 50_000,
             description: "低负载模式（epoch % 3 == 1）".to_string(),
         },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1000..=5000),
+            num_txs: rand::thread_rng().gen_range(3000..=8000),
             input_len: 300,
             gas_limit: 100_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),

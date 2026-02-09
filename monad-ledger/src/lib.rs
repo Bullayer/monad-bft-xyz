@@ -20,7 +20,6 @@ use std::{
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
-    time::SystemTime,
 };
 
 use futures::Stream;
@@ -52,6 +51,7 @@ struct TpsRecord {
     window_tx_count: u64,
     window_start_block: u64,
     window_end_block: u64,
+    window_empty_block: u64,
     timestamp: u64,
 }
 
@@ -84,8 +84,10 @@ where
 
     // 滑动窗口 TPS 统计
     tps_window_start_block: u64,
+    tps_window_start_timestamp: f64,
     tps_window_tx_count: u64,
     tps_window_block_count: u64,
+    tps_window_empty_block_count: u64,
 }
 
 const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
@@ -130,8 +132,10 @@ where
 
             // 滑动窗口 TPS 统计
             tps_window_start_block: 0,
+            tps_window_start_timestamp: 0.0,
             tps_window_tx_count: 0,
             tps_window_block_count: 0,
+            tps_window_empty_block_count: 0,
         }
     }
 
@@ -297,6 +301,7 @@ where
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
+                    let epoch = block.get_epoch();
                     let block_id = block.get_id();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
@@ -306,17 +311,19 @@ where
                     let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
                     if num_tx > 0 {
                         commited_tps = num_tx as f64 / vote_delay.as_secs_f64();
+                    } else {
+                        self.tps_window_empty_block_count += 1;
                     }
 
                     // 滑动窗口 TPS 统计（每 N 个区块计算一次）
                     const TPS_WINDOW_SIZE: u64 = 1000;
                     let mut window_tps = 0f64;
-                    let mut window_tx_count = 0u64;
-                    let prev_window_block_count = self.tps_window_block_count;
+                    let block_timestamp = block.get_timestamp() as f64 / 1e9; // 使用区块时间戳（纳秒转秒）
 
-                    // 直接从当前区块开始
+                    // 初始化起始 区块/时间戳 信息
                     if self.tps_window_start_block == 0 {
                         self.tps_window_start_block = block_num;
+                        self.tps_window_start_timestamp = block_timestamp;
                     }
 
                     // 累加数据到当前窗口
@@ -324,25 +331,26 @@ where
                     self.tps_window_block_count += 1;
 
                     // 达到窗口大小时计算 TPS
-                    if self.tps_window_block_count > TPS_WINDOW_SIZE {
-                        
-                        let window_elapsed_blocks = block_num - self.tps_window_start_block;
-                        let window_total_tx = self.tps_window_tx_count;
-                        if window_elapsed_blocks > 0 {
-                            // TPS = 总交易数 / 时间跨度(区块数 * vote_delay)
-                            window_tps = window_total_tx as f64 / (window_elapsed_blocks as f64 * vote_delay.as_secs_f64());
-                        }
-                        window_tx_count = window_total_tx;
+                    if self.tps_window_block_count >= TPS_WINDOW_SIZE {
 
-                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, "====== window tps");
-                        
+                        let window_elapsed_blocks = block_num - self.tps_window_start_block + 1;
+                        let window_elapsed_time = block_timestamp - self.tps_window_start_timestamp;
+                        let window_total_tx = self.tps_window_tx_count;
+                        let window_tx_count = window_total_tx;
+
+                        if window_elapsed_time > 0.0 {
+                            // TPS = 总交易数 / 实际时间跨度（使用区块时间戳）
+                            window_tps = window_total_tx as f64 / window_elapsed_time;
+                        }
+
+                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, window_elapsed_time, "====== window tps");
 
                         // 写入 TPS 数据到文件
                         let tps_path = {
                             let mut path = self.ledger_path.clone();
                             path.push("tps");
                             std::fs::create_dir_all(&path).ok(); // 创建 tps 目录
-                            path.join(format!("tps.{}.{}", self.tps_window_start_block, block_num))
+                            path.join(format!("tps.{}.{}.{}", epoch, self.tps_window_start_block, block_num))
                         };
 
                         let tps_record = TpsRecord {
@@ -350,20 +358,19 @@ where
                             window_tx_count,
                             window_start_block: self.tps_window_start_block,
                             window_end_block: block_num,
-                            timestamp: SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
+                            window_empty_block: self.tps_window_empty_block_count,
+                            timestamp: block.get_timestamp() as u64 / 1_000_000_000,
                         };
 
                         // 写入数据，并使用 ok() 避免写入失败时 panic
                         let content = toml::to_string(&tps_record).unwrap_or_default();
-                        std::fs::write(&tps_path, content).ok(); 
-                        
-                        // 重置窗口
+                        std::fs::write(&tps_path, content).ok();
+
+                        // 重置窗口（保留当前区块作为新窗口的起始点，时间戳同步更新）
                         self.tps_window_start_block = block_num;
-                        self.tps_window_tx_count = num_tx;
-                        self.tps_window_block_count = 1;
+                        self.tps_window_start_timestamp = block_timestamp;
+                        self.tps_window_tx_count = 0;
+                        self.tps_window_block_count = 0;
                     }
 
                     let metrics_num_tx = self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS];

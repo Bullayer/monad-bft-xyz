@@ -52,6 +52,8 @@ struct TpsRecord {
     window_start_block: u64,
     window_end_block: u64,
     window_empty_block: u64,
+    window_block_max_tx: u64,
+    window_block_min_tx: u64,
     timestamp: u64,
 }
 
@@ -84,10 +86,11 @@ where
 
     // 滑动窗口 TPS 统计
     tps_window_start_block: u64,
-    tps_window_start_timestamp: f64,
     tps_window_tx_count: u64,
     tps_window_block_count: u64,
     tps_window_empty_block_count: u64,
+    tps_window_block_max_tx: u64,
+    tps_window_block_min_tx: u64,
 }
 
 const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
@@ -132,10 +135,11 @@ where
 
             // 滑动窗口 TPS 统计
             tps_window_start_block: 0,
-            tps_window_start_timestamp: 0.0,
             tps_window_tx_count: 0,
             tps_window_block_count: 0,
             tps_window_empty_block_count: 0,
+            tps_window_block_max_tx: 0,
+            tps_window_block_min_tx: 0,
         }
     }
 
@@ -323,27 +327,33 @@ where
                     // 初始化起始 区块/时间戳 信息
                     if self.tps_window_start_block == 0 {
                         self.tps_window_start_block = block_num;
-                        self.tps_window_start_timestamp = block_timestamp;
+                        self.tps_window_block_max_tx = num_tx;
+                        self.tps_window_block_min_tx = num_tx;
                     }
 
                     // 累加数据到当前窗口
                     self.tps_window_tx_count += num_tx;
                     self.tps_window_block_count += 1;
+                    if num_tx > self.tps_window_block_max_tx {
+                        self.tps_window_block_max_tx = num_tx;
+                    }
+                    if num_tx < self.tps_window_block_min_tx {
+                        self.tps_window_block_min_tx = num_tx;
+                    }
 
                     // 达到窗口大小时计算 TPS
                     if self.tps_window_block_count >= TPS_WINDOW_SIZE {
 
                         let window_elapsed_blocks = block_num - self.tps_window_start_block + 1;
-                        let window_elapsed_time = block_timestamp - self.tps_window_start_timestamp;
                         let window_total_tx = self.tps_window_tx_count;
                         let window_tx_count = window_total_tx;
 
-                        if window_elapsed_time > 0.0 {
-                            // TPS = 总交易数 / 实际时间跨度（使用区块时间戳）
-                            window_tps = window_total_tx as f64 / window_elapsed_time;
+                        if window_elapsed_blocks > 0 {
+                            // TPS = 总交易数 / （区块数 * 出块时间）
+                            window_tps = window_total_tx as f64 / (window_elapsed_blocks as f64 * vote_delay.as_secs_f64());
                         }
 
-                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, window_elapsed_time, "====== window tps");
+                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, window_block_max_tx = self.tps_window_block_max_tx, "====== window tps");
 
                         // 写入 TPS 数据到文件
                         let tps_path = {
@@ -359,6 +369,8 @@ where
                             window_start_block: self.tps_window_start_block,
                             window_end_block: block_num,
                             window_empty_block: self.tps_window_empty_block_count,
+                            window_block_max_tx: self.tps_window_block_max_tx,
+                            window_block_min_tx: self.tps_window_block_min_tx,
                             timestamp: block.get_timestamp() as u64 / 1_000_000_000,
                         };
 
@@ -366,12 +378,13 @@ where
                         let content = toml::to_string(&tps_record).unwrap_or_default();
                         std::fs::write(&tps_path, content).ok();
 
-                        // 重置窗口（保留当前区块作为新窗口的起始点，时间戳同步更新）
+                        // 重置窗口内容
                         self.tps_window_start_block = block_num;
-                        self.tps_window_start_timestamp = block_timestamp;
                         self.tps_window_tx_count = 0;
                         self.tps_window_block_count = 0;
                         self.tps_window_empty_block_count = 0;
+                        self.tps_window_block_max_tx = 0;
+                        self.tps_window_block_min_tx = 0;
                     }
 
                     let metrics_num_tx = self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS];

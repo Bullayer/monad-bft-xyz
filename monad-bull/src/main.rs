@@ -390,7 +390,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 // 封装每次迭代为独立 async 块，便于捕获异常
                 let iteration = async {
                     // 停顿个出块事件再继续构造数据
-                    tokio::time::sleep(vote_delay / 2).await;
+                    tokio::time::sleep(vote_delay / 3).await;
 
                     // 从共享变量拿到最新的 epoch / seq_num
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);

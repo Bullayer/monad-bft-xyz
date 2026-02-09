@@ -371,6 +371,7 @@ where
                         self.tps_window_start_timestamp = block_timestamp;
                         self.tps_window_tx_count = 0;
                         self.tps_window_block_count = 0;
+                        self.tps_window_empty_block_count = 0;
                     }
 
                     let metrics_num_tx = self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS];

@@ -309,7 +309,7 @@ where
                     }
 
                     // 滑动窗口 TPS 统计（每 N 个区块计算一次）
-                    const TPS_WINDOW_SIZE: u64 = 100;
+                    const TPS_WINDOW_SIZE: u64 = 1000;
                     let mut window_tps = 0f64;
                     let mut window_tx_count = 0u64;
                     let prev_window_block_count = self.tps_window_block_count;

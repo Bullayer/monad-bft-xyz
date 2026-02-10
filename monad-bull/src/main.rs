@@ -369,7 +369,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-        let addresses = generate_secrets(100000).await;
+        let addresses = generate_secrets(1000000).await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
@@ -410,9 +410,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 // 封装每次迭代为独立 async 块，便于捕获异常
                 let iteration = async {
 
-                    // 停顿个出块事件再继续构造数据
-                    tokio::time::sleep(vote_delay / 3).await;
-
                     // 从共享变量拿到最新的 epoch / seq_num
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
                     let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
@@ -421,6 +418,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     if !strategy.enabled {
                         info!(epoch = current_epoch, "Fill disabled for this epoch");
                         return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                    }
+
+                    // 高负载模式跳过 sleep，直接开始构造数据
+                    if !strategy.skip_sleep {
+                        tokio::time::sleep(vote_delay / 2).await;
                     }
 
                     let num_txs = strategy.num_txs;
@@ -1087,6 +1089,8 @@ struct TxStrategy {
     input_len: usize,
     /// Gas limit
     gas_limit: u64,
+    /// 是否跳过 sleep（高负载模式）
+    skip_sleep: bool,
     /// 描述
     description: String,
 }
@@ -1099,6 +1103,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             num_txs: 0,
             input_len: 0,
             gas_limit: 21_000,
+            skip_sleep: true,
             description: "空块模式（epoch % 3 == 0）".to_string(),
         },
         1 => TxStrategy {
@@ -1106,6 +1111,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             num_txs: rand::thread_rng().gen_range(500..=1000),
             input_len: 300,
             gas_limit: 50_000,
+            skip_sleep: false,
             description: "低负载模式（epoch % 3 == 1）".to_string(),
         },
         _ => TxStrategy {  // 2
@@ -1113,7 +1119,8 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             num_txs: rand::thread_rng().gen_range(5000..=10000),
             input_len: 300,
             gas_limit: 50_000,
+            skip_sleep: true,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
-        },
+        }
     }
 }

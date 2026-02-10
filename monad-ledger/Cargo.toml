@@ -18,6 +18,10 @@ monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
+monad-chain-config = { workspace = true }
+
+serde = { workspace = true }
+toml = { workspace = true }
 
 futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync"] }

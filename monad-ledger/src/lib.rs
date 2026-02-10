@@ -27,6 +27,7 @@ use monad_block_persist::{BlockPersist, FileBlockPersist};
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
+use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
 use monad_consensus_types::{
     block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
@@ -40,6 +41,21 @@ use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, trace, warn};
+extern crate serde;
+use serde::Serialize;
+
+// 添加 TPS 数据结构
+#[derive(Serialize)]
+struct TpsRecord {
+    window_tps: f64,
+    window_tx_count: u64,
+    window_start_block: u64,
+    window_end_block: u64,
+    window_empty_block: u64,
+    window_block_max_tx: u64,
+    window_block_min_tx: u64,
+    timestamp: u64,
+}
 
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
@@ -50,6 +66,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     bft_block_persist: FileBlockPersist<ST, SCT, EthExecutionProtocol>,
+    ledger_path: PathBuf, // 用于存储 TPS 数据
 
     metrics: ExecutorMetrics,
     last_commit: Option<(SeqNum, Round)>,
@@ -66,6 +83,14 @@ where
     >,
 
     phantom: PhantomData<ST>,
+
+    // 滑动窗口 TPS 统计
+    tps_window_start_block: u64,
+    tps_window_tx_count: u64,
+    tps_window_block_count: u64,
+    tps_window_empty_block_count: u64,
+    tps_window_block_max_tx: u64,
+    tps_window_block_min_tx: u64,
 }
 
 const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
@@ -80,6 +105,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(ledger_path: PathBuf) -> Self {
+        let ledger_path_clone = ledger_path.clone();
         match std::fs::create_dir(&ledger_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
@@ -91,6 +117,7 @@ where
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
             bft_block_persist,
+            ledger_path: ledger_path_clone,
 
             metrics: Default::default(),
             last_commit: None,
@@ -105,6 +132,14 @@ where
             fetches,
 
             phantom: PhantomData,
+
+            // 滑动窗口 TPS 统计
+            tps_window_start_block: 0,
+            tps_window_tx_count: 0,
+            tps_window_block_count: 0,
+            tps_window_empty_block_count: 0,
+            tps_window_block_max_tx: 0,
+            tps_window_block_min_tx: 0,
         }
     }
 
@@ -270,10 +305,91 @@ where
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
+                    let epoch = block.get_epoch();
                     let block_id = block.get_id();
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
-                    info!(num_tx, block_num, "committed block");
+
+                    // calc TPS per block
+                    let mut commited_tps = 0f64;
+                    let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
+                    if num_tx > 0 {
+                        commited_tps = num_tx as f64 / vote_delay.as_secs_f64();
+                    } else {
+                        self.tps_window_empty_block_count += 1;
+                    }
+
+                    // 滑动窗口 TPS 统计（每 N 个区块计算一次）
+                    const TPS_WINDOW_SIZE: u64 = 1000;
+                    let mut window_tps = 0f64;
+                    let block_timestamp = block.get_timestamp() as f64 / 1e9; // 使用区块时间戳（纳秒转秒）
+
+                    // 初始化起始 区块/时间戳 信息
+                    if self.tps_window_start_block == 0 {
+                        self.tps_window_start_block = block_num;
+                        self.tps_window_block_max_tx = num_tx;
+                        self.tps_window_block_min_tx = num_tx;
+                    }
+
+                    // 累加数据到当前窗口
+                    self.tps_window_tx_count += num_tx;
+                    self.tps_window_block_count += 1;
+                    if num_tx > self.tps_window_block_max_tx {
+                        self.tps_window_block_max_tx = num_tx;
+                    }
+                    if num_tx < self.tps_window_block_min_tx {
+                        self.tps_window_block_min_tx = num_tx;
+                    }
+
+                    // 达到窗口大小时计算 TPS
+                    if self.tps_window_block_count >= TPS_WINDOW_SIZE {
+
+                        let window_elapsed_blocks = block_num - self.tps_window_start_block + 1;
+                        let window_total_tx = self.tps_window_tx_count;
+                        let window_tx_count = window_total_tx;
+
+                        if window_elapsed_blocks > 0 {
+                            // TPS = 总交易数 / （区块数 * 出块时间）
+                            window_tps = window_total_tx as f64 / (window_elapsed_blocks as f64 * vote_delay.as_secs_f64());
+                        }
+
+                        info!(window_tps, window_tx_count, window_blocks = window_elapsed_blocks, window_block_max_tx = self.tps_window_block_max_tx, "====== window tps");
+
+                        // 写入 TPS 数据到文件
+                        let tps_path = {
+                            let mut path = self.ledger_path.clone();
+                            path.push("tps");
+                            std::fs::create_dir_all(&path).ok(); // 创建 tps 目录
+                            path.join(format!("tps.{}.{}.{}", epoch, self.tps_window_start_block, block_num))
+                        };
+
+                        let tps_record = TpsRecord {
+                            window_tps,
+                            window_tx_count,
+                            window_start_block: self.tps_window_start_block,
+                            window_end_block: block_num,
+                            window_empty_block: self.tps_window_empty_block_count,
+                            window_block_max_tx: self.tps_window_block_max_tx,
+                            window_block_min_tx: self.tps_window_block_min_tx,
+                            timestamp: block.get_timestamp() as u64 / 1_000_000_000,
+                        };
+
+                        // 写入数据，并使用 ok() 避免写入失败时 panic
+                        let content = toml::to_string(&tps_record).unwrap_or_default();
+                        std::fs::write(&tps_path, content).ok();
+
+                        // 重置窗口内容
+                        self.tps_window_start_block = block_num;
+                        self.tps_window_tx_count = 0;
+                        self.tps_window_block_count = 0;
+                        self.tps_window_empty_block_count = 0;
+                        self.tps_window_block_max_tx = 0;
+                        self.tps_window_block_min_tx = 0;
+                    }
+
+                    let metrics_num_tx = self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS];
+                    info!(num_tx, block_num, commited_tps, metrics_num_tx, "committed block");
+
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += num_tx;
                     self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = block_num;
 

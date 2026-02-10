@@ -1,9 +1,12 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap}, marker::PhantomData, net::{IpAddr, SocketAddr, ToSocketAddrs}, process, sync::Arc, thread::sleep, time::{Duration, Instant}
+    collections::{BTreeMap, BTreeSet, HashMap}, marker::PhantomData, net::{IpAddr, SocketAddr, ToSocketAddrs}, process, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}
 };
+
+use bytes::Bytes;
 
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
+use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
 use monad_consensus_types::{metrics::Metrics, validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig}};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
@@ -13,12 +16,8 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
-use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig, ForwardedTxs};
 use monad_eth_testutil::make_legacy_tx_with_chain_id;
-use alloy_primitives::B256;
-use bytes::Bytes;
-use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent, TxPoolCommand};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -37,7 +36,8 @@ use monad_raptorcast::{
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::{NopStateBackend, StateBackendThreadClient};
-use monad_executor_glue::StateSyncCommand;
+use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent, StateSyncCommand};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
@@ -54,6 +54,7 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
+use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use rand::Rng;
@@ -66,6 +67,15 @@ use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 mod cli;
 mod error;
 mod state;
+
+#[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemallocator")]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const EXECUTION_DELAY: u64 = 3;
@@ -87,6 +97,7 @@ fn main() {
 
     // thread.txt
     let runtime = tokio::runtime::Builder::new_multi_thread()  // 创建多线程运行时构建器
+        .worker_threads(8)                                          // 设置工作线程数
         .enable_all()                                           // 启用所有 I/O 驱动和时间驱动
         .build()                                               // 构建运行时实例
         .map_err(Into::into)                                   // 将构建错误转换为 NodeSetupError
@@ -204,7 +215,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             create_block_policy(),
             state_backend.clone(),
             EthTxPoolIpcConfig {
-                bind_path: node_state.mempool_ipc_path,
+                bind_path: node_state.mempool_ipc_path.clone(),
                 tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
                 max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
                 queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
@@ -345,18 +356,145 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
 
-    // 持续填充状态
-    let mut continuous_fill = ContinuousFillState::new();
     let enable_continuous_fill = std::env::var("MONAD_CONTINUOUS_FILL")
         .unwrap_or_else(|_| "false".to_string())
         .parse::<bool>()
         .unwrap_or(false);
 
-    let mut addresses = Vec::new();
+    // 共享的 epoch 变量（供 lastCommit写 和 spawn任务读 使用）
+    let shared_epoch = Arc::new(AtomicU64::new(1));
+    let shared_seq_num = Arc::new(AtomicU64::new(0));
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-        addresses = generate_secrets(10000).await;
+        let addresses = generate_secrets(100000).await;
+
+        // 直接发送交易到内存池（使用 forwarded_tx）
+        let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
+        let addresses_clone = addresses.clone();  // 克隆地址池
+        let chain_id = node_state.chain_config.chain_id();
+
+        // 获取第一个地址的 pubkey 作为 sender（仅用于发送一批交易）
+        let first_secret = &addresses_clone[0].1;
+        let mut first_secret_bytes = first_secret.as_slice().to_vec();
+        let first_kp = monad_secp::KeyPair::from_bytes(&mut first_secret_bytes)
+            .expect("Failed to create KeyPair from first address");
+        let sender_pubkey = first_kp.pubkey();
+
+        // 共享的 epoch 变量（供 spawn 任务读取）
+        let current_epoch_clone = shared_epoch.clone();
+        let current_seq_num_clone = shared_seq_num.clone();
+
+        tokio::spawn(async move {
+
+            let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
+
+            // 地址使用索引，循环使用地址池
+            let mut address_index: usize = 0;
+
+            loop {
+
+                // 封装每次迭代为独立 async 块，便于捕获异常
+                let iteration = async {
+
+                    // 停顿个出块事件再继续构造数据
+                    tokio::time::sleep(vote_delay / 3).await;
+
+                    // 从共享变量拿到最新的 epoch / seq_num
+                    let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
+                    let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
+
+                    let strategy = get_tx_strategy(current_epoch);
+                    if !strategy.enabled {
+                        info!(epoch = current_epoch, "Fill disabled for this epoch");
+                        return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                    }
+
+                    let num_txs = strategy.num_txs;
+                    if num_txs > addresses_clone.len() {
+                        error!("====== enlarge address pool - num_txs > addresses_clone.len(), num_txs: {}, addresses_clone.len: {}", num_txs, addresses_clone.len());
+                        return Ok(());
+                    }
+
+                    let gas_limit = strategy.gas_limit;
+                    let input_len = strategy.input_len;
+                    let gas_price: u128 = 100_000_000_000u128.into();
+
+                    let now = Instant::now();
+
+                    // 批量收集交易数据（使用 RLP 编码）
+                    let mut encoded_txs: Vec<Bytes> = Vec::with_capacity(num_txs);
+
+                    for _ in 0..num_txs {
+
+                        // 使用当前索引的地址
+                        let (_address, secret) = &addresses_clone[address_index];
+
+                        // 检查是否需要重置索引（地址池一轮使用完毕）
+                        if address_index + 1 >= addresses_clone.len() {
+                            address_index = 0;
+                            info!(address_index, total_addresses = addresses_clone.len(), "====== Address index reset");
+                        } else {
+                            address_index += 1;
+                        }
+
+                        // 构造普通交易
+                        let tx = make_legacy_tx_with_chain_id(
+                            secret.clone(),
+                            gas_price,
+                            gas_limit,
+                            0, // ignore nonce
+                            input_len,
+                            chain_id,
+                        );
+
+                        // 使用 RLP 编码
+                        let encoded = alloy_rlp::encode(&tx);
+                        encoded_txs.push(encoded.into());
+                    }
+
+                    // 直接发送到内存池
+                    if !encoded_txs.is_empty() {
+                        let sender = NodeId::new(sender_pubkey);
+
+                        let forwarded = ForwardedTxs {
+                            sender,
+                            txs: encoded_txs,
+                        };
+
+                        if let Err(e) = forwarded_tx_clone.try_send(vec![forwarded]) {
+                            error!(error = %e, num_txs, "Failed to send txs to forwarded channel");
+                        }
+                    }
+
+                    info!(strategy = %strategy.description, epoch = current_epoch, seq_num = current_seq_num, num_txs, address_index, elapsed = now.elapsed().as_millis(), "====== Continuous fill txs done in background");
+
+                    Ok(())
+                };
+
+                // 捕获未知异常，崩溃后自动重启
+                let iteration_future = std::panic::AssertUnwindSafe(iteration);
+                match iteration_future.catch_unwind().await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        error!(error = %e, "Iteration returned error, continuing...");
+                    }
+                    Err(panic_info) => {
+                        if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            error!(panic = %s, "Continuous fill loop panicked");
+                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                            error!(panic = %s, "Continuous fill loop panicked");
+                        } else {
+                            error!(panic = ?panic_info, "Continuous fill loop panicked with unknown error");
+                        }
+                        address_index = 0;
+                        warn!("Restarting continuous fill loop...");
+                    }
+                }
+            }
+        });
+    } else {
+        info!("Continuous fill disabled");
     }
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
@@ -389,28 +527,39 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     return Err(());
                 };
 
-                // 从事件中提取 epoch（用于持续填充）
-                let event_epoch = match &inner_event {
+                // 从事件中提取 epoch 和 seq_num（用于持续填充策略选择）
+                let (event_epoch, event_seq_num) = match &inner_event {
                     MonadEvent::MempoolEvent(mempool_event) => {
                         match mempool_event {
-                            monad_executor_glue::MempoolEvent::Proposal { epoch, .. } => Some(epoch.0),
-                            _ => None,
+                            monad_executor_glue::MempoolEvent::Proposal { epoch, seq_num, .. } => {
+                                (Some(epoch.0), Some(seq_num.0))
+                            }
+                            _ => (None, None),
                         }
                     }
                     MonadEvent::ValidatorEvent(validator_event) => {
                         match validator_event {
-                            monad_executor_glue::ValidatorEvent::UpdateValidators(vset) => Some(vset.epoch.0),
+                            monad_executor_glue::ValidatorEvent::UpdateValidators(vset) => {
+                                (Some(vset.epoch.0), None)
+                            }
                         }
                     }
-                    _ => None,
+                    _ => (None, None),
                 };
 
-                let mut current_epoch = continuous_fill.last_epoch;
-                if enable_continuous_fill && event_epoch.is_some() && event_epoch.unwrap() > current_epoch {
-                    continuous_fill.reset();
-                    continuous_fill.last_epoch = event_epoch.unwrap();
-                    current_epoch = continuous_fill.last_epoch;
-                    info!("============ epoch detected - new: {}, old: {}", event_epoch.unwrap(), continuous_fill.last_epoch);
+                let current_epoch = shared_epoch.load(Ordering::SeqCst);
+                let current_seq_num = shared_seq_num.load(Ordering::SeqCst);
+                if enable_continuous_fill  {
+                    if event_epoch.is_some() && event_epoch.unwrap() > current_epoch {
+                        let new_epoch = event_epoch.unwrap();
+                        shared_epoch.store(new_epoch, Ordering::SeqCst);  // 同步到共享变量
+                        info!("============ epoch detected - new: {}, old: {}", new_epoch, current_epoch);
+                    }
+                    if event_seq_num.is_some() && event_seq_num.unwrap() > current_seq_num {
+                        let new_seq_num = event_seq_num.unwrap();
+                        shared_seq_num.store(new_seq_num, Ordering::SeqCst);  // 同步到共享变量
+                        // info!("============ seq_num detected - new: {}, old: {}", new_seq_num, current_seq_num);
+                    }
                 }
 
                 // 包装成 LogFriendlyMonadEvent 用于日志
@@ -474,81 +623,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     if last_ledger_tip.is_none_or(|last_ledger_tip| ledger_tip > last_ledger_tip) {
                         last_ledger_tip = Some(ledger_tip);
                         ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.map(|s| s.as_u64()));
-
-                        let chain_id = node_state.chain_config.chain_id();
-
-                        // 持续填充
-                        if enable_continuous_fill {
-                            async {
-                                use alloy_eips::eip2718::Encodable2718;
-
-                                // 获取当前 epoch 的策略
-                                let strategy = get_tx_strategy(current_epoch);
-                                // 如果策略禁用，跳过填充
-                                if !strategy.enabled {
-                                    info!(epoch = current_epoch, "Fill disabled for this epoch");
-                                    return;
-                                }
-
-                                let num_txs = strategy.num_txs;
-                                if num_txs > addresses.len() {
-                                    error!("====== enlarge address pool - num_txs > addresses.len(), num_txs: {}, addresses.len: {}", num_txs, addresses.len());
-                                    return;
-                                }
-
-                                let gas_limit = strategy.gas_limit;
-                                let input_len = strategy.input_len;
-                                let gas_price: u128 = 100_000_000_000u128.into();
-
-                                info!(epoch = current_epoch, num_txs, strategy = %strategy.description, "Continuous fill");
-
-                                let now = Instant::now();
-
-                                for _i in 0..num_txs {
-
-                                    if continuous_fill.last_sender_index >= addresses.len() - 1 {
-                                        info!(continuous_fill.last_sender_index, continuous_fill.total_filled, "====== Resetting sender index");
-                                        continuous_fill.last_sender_index = 0;
-                                    }
-
-                                    let _address = addresses[continuous_fill.last_sender_index].0;
-                                    let secret = addresses[continuous_fill.last_sender_index].1;
-                                    let mut secret_bytes = secret.as_slice().to_vec();
-                                    let kp = monad_secp::KeyPair::from_bytes(&mut secret_bytes).unwrap();
-                                    let sender = NodeId::new(kp.pubkey());
-
-                                    // 没有 state，nonce 一直为 0
-                                    let nonce = 0;
-
-                                    // info!(address = address.to_string(), nonce = nonce, txIndex = continuous_fill.last_sender_index, "====== Fill tx");
-                                    let tx = make_legacy_tx_with_chain_id(
-                                        secret, gas_price, gas_limit, nonce, input_len, chain_id,
-                                    );
-
-                                    let mut encoded = Vec::new();
-                                    tx.encode_2718(&mut encoded);
-                                    let encoded_bytes = Bytes::from(encoded);
-
-                                    let command = TxPoolCommand::InsertForwardedTxs {
-                                        sender,
-                                        txs: vec![encoded_bytes],
-                                    };
-                                    executor.txpool.exec(vec![command]);
-
-                                    continuous_fill.last_sender_index += 1;
-                                }
-
-                                if continuous_fill.last_sender_index >= addresses.len() - 1 {
-                                    info!(continuous_fill.last_sender_index, continuous_fill.total_filled, "====== Resetting sender index");
-                                    continuous_fill.last_sender_index = 0;
-                                }
-
-                                let elapsed = now.elapsed();
-
-                                continuous_fill.total_filled += num_txs;
-                                info!(epoch = current_epoch, filled = num_txs, total = continuous_fill.total_filled, elapsed = elapsed.as_millis(), "Continuous fill done");
-                            }.await;
-                        }
                     }
                 }
             }
@@ -950,7 +1024,7 @@ async fn generate_secrets(address_count: usize) -> Vec<(alloy_primitives::Addres
                 let derived_secret = B256::from(derived);
                 let sender = secret_to_eth_address(derived_secret);
 
-                println!("   [{}] 0x{:?}", i, sender);
+                // println!("   [{}] 0x{:?}", i, sender);
 
                 (sender, derived_secret)
             })
@@ -968,7 +1042,6 @@ async fn generate_secrets(address_count: usize) -> Vec<(alloy_primitives::Addres
     let elapsed = start_time.elapsed();
     let rate = address_count as f64 / elapsed.as_secs_f64();
 
-    println!("\n");
     println!("🔐 生成 {}/{} 个发送方地址: 耗时 {:.3}s ({:.0} addr/s)", results.len(), address_count, elapsed.as_secs_f64(), rate);
 
     results
@@ -1001,52 +1074,26 @@ struct TxStrategy {
 /// 根据 epoch 获取交易策略
 fn get_tx_strategy(epoch: u64) -> TxStrategy {
     match epoch % 3 {
-        0 => TxStrategy {
-            enabled: false,
-            num_txs: 0,
-            input_len: 0,
-            gas_limit: 21_000,
-            description: "空块模式（epoch % 3 == 0）".to_string(),
-        },
-        1 => TxStrategy {
-            enabled: true,
-            num_txs: rand::thread_rng().gen_range(1..=300),
-            input_len: 16,
-            gas_limit: 50_000,
-            description: "低负载模式（epoch % 3 == 1）".to_string(),
-        },
+        // 0 => TxStrategy {
+        //     enabled: false,
+        //     num_txs: 0,
+        //     input_len: 0,
+        //     gas_limit: 21_000,
+        //     description: "空块模式（epoch % 3 == 0）".to_string(),
+        // },
+        // 1 => TxStrategy {
+        //     enabled: true,
+        //     num_txs: rand::thread_rng().gen_range(500..=1000),
+        //     input_len: 300,
+        //     gas_limit: 50_000,
+        //     description: "低负载模式（epoch % 3 == 1）".to_string(),
+        // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1000..=3000),
-            input_len: 256,
+            num_txs: rand::thread_rng().gen_range(5000..=10000),
+            input_len: 300,
             gas_limit: 100_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         },
-    }
-}
-
-/// 持续填充状态
-struct ContinuousFillState {
-    nonces: HashMap<alloy_primitives::Address, u64>,  // 每个地址的 nonce
-    total_filled: usize,     // 总填充数
-    last_epoch: u64,         // 上次填充的 epoch
-    last_sender_index: usize, // 上次填充的 sender 索引
-    strategy: TxStrategy,    // 当前策略
-}
-
-impl ContinuousFillState {
-    fn new() -> Self {
-        Self {
-            nonces: HashMap::new(),
-            total_filled: 0,
-            last_epoch: 1,
-            last_sender_index: 0,
-            strategy: get_tx_strategy(0),
-        }
-    }
-
-    fn reset(&mut self) {
-        info!("====== 重置状态 total_filled: {}", self.total_filled);
-        self.total_filled = 0;
     }
 }

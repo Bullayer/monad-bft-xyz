@@ -1518,7 +1518,7 @@ where
 
         // 遍历并验证区块中的每笔交易
         if block.validated_txns.len() > 0 {
-            tracing::info!("====== validated_txns: {}, block: {:?}", block.validated_txns.len(), block.header());
+            // tracing::info!("====== validated_txns: {}, block: {:?}", block.validated_txns.len(), block.header());
         }
         for txn in block.validated_txns.iter() {
             // 验证并更新交易发送者的nonce

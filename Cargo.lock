@@ -5100,6 +5100,7 @@ dependencies = [
  "rayon",
  "reqwest 0.11.27",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tokio",
  "toml",
  "tracing",
@@ -5666,6 +5667,7 @@ dependencies = [
  "futures",
  "monad-block-persist",
  "monad-blocksync",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -5673,7 +5675,9 @@ dependencies = [
  "monad-executor-glue",
  "monad-types",
  "monad-validator",
+ "serde",
  "tokio",
+ "toml",
  "tracing",
 ]
 

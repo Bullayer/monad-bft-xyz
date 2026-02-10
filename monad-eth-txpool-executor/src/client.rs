@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -57,7 +57,8 @@ where
     metrics: ExecutorMetrics,
     update_metrics: Box<dyn Fn(&mut ExecutorMetrics)>,
 
-    command_tx: tokio::sync::mpsc::Sender<
+    /// Shared command sender for use across async tasks
+    pub command_tx: Arc<tokio::sync::mpsc::Sender<
         Vec<
             TxPoolCommand<
                 ST,
@@ -69,8 +70,8 @@ where
                 CRT,
             >,
         >,
-    >,
-    forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+    >>,
+    pub forwarded_tx: Arc<tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>>,
     event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
@@ -156,8 +157,8 @@ where
             metrics: ExecutorMetrics::default(),
             update_metrics,
 
-            command_tx,
-            forwarded_tx,
+            command_tx: Arc::new(command_tx),
+            forwarded_tx: Arc::new(forwarded_tx),
             event_rx,
         }
     }

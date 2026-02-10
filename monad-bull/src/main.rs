@@ -421,7 +421,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     }
 
                     if !strategy.skip_sleep {
-                        tokio::time::sleep(vote_delay / 2).await;
+                        tokio::time::sleep(vote_delay).await;
                     }
 
                     let num_txs = strategy.num_txs;

@@ -134,11 +134,12 @@ impl TrackedTxList {
         tx: ValidEthTransaction,
         last_commit_base_fee: u64,
     ) -> Option<&ValidEthTransaction> {
-        if tx.nonce() < self.account_nonce {
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
-            tracing::warn!(nonce = tx.nonce(), account_nonce = self.account_nonce, tx.hash = ?tx.hash(), "TXPOOL DROP: NonceTooLow");
-            return None;
-        }
+        // TODO: 临时去掉 nonce 验证，允许任意 nonce
+        // if tx.nonce() < self.account_nonce {
+        //     event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
+        //     tracing::warn!(nonce = tx.nonce(), account_nonce = self.account_nonce, tx.hash = ?tx.hash(), "TXPOOL DROP: NonceTooLow");
+        //     return None;
+        // }
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {

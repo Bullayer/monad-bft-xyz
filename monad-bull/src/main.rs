@@ -1097,22 +1097,23 @@ struct TxStrategy {
 /// 根据 epoch 获取交易策略
 fn get_tx_strategy(epoch: u64) -> TxStrategy {
     match epoch % 3 {
-        0 => TxStrategy {
-            enabled: false,
-            num_txs: 0,
-            input_len: 0,
-            gas_limit: 21_000,
-            skip_sleep: true,
-            description: "空块模式（epoch % 3 == 0）".to_string(),
-        },
-        1 => TxStrategy {
-            enabled: true,
-            num_txs: rand::thread_rng().gen_range(500..=1000),
-            input_len: 300,
-            gas_limit: 50_000,
-            skip_sleep: false,
-            description: "低负载模式（epoch % 3 == 1）".to_string(),
-        },
+        // TODO rollback
+        // 0 => TxStrategy {
+        //     enabled: false,
+        //     num_txs: 0,
+        //     input_len: 0,
+        //     gas_limit: 21_000,
+        //     skip_sleep: true,
+        //     description: "空块模式（epoch % 3 == 0）".to_string(),
+        // },
+        // 1 => TxStrategy {
+        //     enabled: true,
+        //     num_txs: rand::thread_rng().gen_range(500..=1000),
+        //     input_len: 300,
+        //     gas_limit: 50_000,
+        //     skip_sleep: false,
+        //     description: "低负载模式（epoch % 3 == 1）".to_string(),
+        // },
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(5000..=10000),

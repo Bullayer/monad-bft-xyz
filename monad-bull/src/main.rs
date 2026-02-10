@@ -369,7 +369,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-        let addresses = generate_secrets(1000000).await;
+        let addresses = generate_secrets(100000).await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
@@ -393,16 +393,25 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         })
         .collect();
 
+        // 为每个地址创建原子 nonce 计数器（从 0 开始）
+        let nonces: Vec<std::sync::atomic::AtomicU64> =
+            std::iter::repeat_with(|| std::sync::atomic::AtomicU64::new(0))
+                .take(signers.len())
+                .collect();
+        let nonces_arc = Arc::new(nonces);
+
         // 共享的 epoch 变量（供 spawn 任务读取）
         let current_epoch_clone = shared_epoch.clone();
         // 共享的 seq_num 变量（供 spawn 任务读取）
         let current_seq_num_clone = shared_seq_num.clone();
+        // 共享 nonces 供 spawn 任务使用
+        let nonces_clone = Arc::clone(&nonces_arc);
 
         tokio::spawn(async move {
 
             let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
 
-            // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
+            // 原子索引，用于循环分配交易到不同地址
             let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
             loop {
@@ -460,12 +469,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         // 安全地获取索引（处理可能的 compare_exchange 失败情况）
                         let safe_idx = if idx + 1 >= addresses_clone.len() { 0 } else { idx };
 
+                        // 原子递增获取该地址的 nonce
+                        let nonce = nonces_clone[safe_idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
                         // 使用优化版本的交易构造（复用 signer 和 input）
                         let tx = make_legacy_tx_with_chain_id_optimized(
                             &signers[safe_idx],  // signer 引用
                             gas_price,
                             gas_limit,
-                            0, // ignore nonce
+                            nonce,
                             &zero_input,     // 复用 input
                             chain_id
                         );
@@ -1097,23 +1109,22 @@ struct TxStrategy {
 /// 根据 epoch 获取交易策略
 fn get_tx_strategy(epoch: u64) -> TxStrategy {
     match epoch % 3 {
-        // TODO rollback
-        // 0 => TxStrategy {
-        //     enabled: false,
-        //     num_txs: 0,
-        //     input_len: 0,
-        //     gas_limit: 21_000,
-        //     skip_sleep: true,
-        //     description: "空块模式（epoch % 3 == 0）".to_string(),
-        // },
-        // 1 => TxStrategy {
-        //     enabled: true,
-        //     num_txs: rand::thread_rng().gen_range(500..=1000),
-        //     input_len: 300,
-        //     gas_limit: 50_000,
-        //     skip_sleep: false,
-        //     description: "低负载模式（epoch % 3 == 1）".to_string(),
-        // },
+        0 => TxStrategy {
+            enabled: false,
+            num_txs: 0,
+            input_len: 0,
+            gas_limit: 21_000,
+            skip_sleep: true,
+            description: "空块模式（epoch % 3 == 0）".to_string(),
+        },
+        1 => TxStrategy {
+            enabled: true,
+            num_txs: rand::thread_rng().gen_range(500..=1000),
+            input_len: 300,
+            gas_limit: 50_000,
+            skip_sleep: false,
+            description: "低负载模式（epoch % 3 == 1）".to_string(),
+        },
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(5000..=10000),

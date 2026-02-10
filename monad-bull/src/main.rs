@@ -383,6 +383,16 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .expect("Failed to create KeyPair from first address");
         let sender_pubkey = first_kp.pubkey();
 
+        // 预创建所有 signer
+        let signers: Vec<PrivateKeySigner> = addresses_clone
+        .par_iter()
+        .map(|(_, secret)| {
+            PrivateKeySigner::from_bytes(secret).unwrap_or_else(|e| {
+                panic!("Failed to create signer: {:?}", e);
+            })
+        })
+        .collect();
+
         // 共享的 epoch 变量（供 spawn 任务读取）
         let current_epoch_clone = shared_epoch.clone();
         // 共享的 seq_num 变量（供 spawn 任务读取）
@@ -424,16 +434,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let gas_price: u128 = 100_000_000_000u128.into();
 
                     let now = Instant::now();
-
-                    // 预创建所有 signer
-                    let signers: Vec<PrivateKeySigner> = addresses_clone
-                    .par_iter()
-                    .map(|(_, secret)| {
-                        PrivateKeySigner::from_bytes(secret).unwrap_or_else(|e| {
-                            panic!("Failed to create signer: {:?}", e);
-                        })
-                    })
-                    .collect();
 
                     // 预分配 zero input（复用）
                     let zero_input = alloy_primitives::Bytes::from(vec![0u8; input_len]);
@@ -1095,14 +1095,14 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             enabled: true,
             num_txs: rand::thread_rng().gen_range(500..=1000),
             input_len: 300,
-            gas_limit: 21_000,
+            gas_limit: 50_000,
             description: "低负载模式（epoch % 3 == 1）".to_string(),
         },
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(5000..=10000),
             input_len: 300,
-            gas_limit: 21_000,
+            gas_limit: 50_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         },
     }

@@ -17,7 +17,7 @@ use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig, ForwardedTxs};
-use monad_eth_testutil::{make_legacy_tx_with_chain_id, make_legacy_tx_with_chain_id_optimized};
+use monad_eth_testutil::{make_legacy_tx_with_chain_id_optimized};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -442,15 +442,26 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let encoded_txs: Vec<Bytes> = (0..num_txs)
                     .into_par_iter()
                     .map(|_| {
+
                         // 原子递增，循环使用地址池
                         let idx = address_index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                        // 如果达到末尾，重置索引（使用 compare_exchange 来处理竞争）
                         if idx + 1 >= addresses_clone.len() {
-                            address_index.store(0, std::sync::atomic::Ordering::SeqCst);
+                            let _ = address_index.compare_exchange(
+                                idx + 1,
+                                0,
+                                std::sync::atomic::Ordering::SeqCst,
+                                std::sync::atomic::Ordering::SeqCst,
+                            );
                         }
+
+                        // 安全地获取索引（处理可能的 compare_exchange 失败情况）
+                        let safe_idx = if idx + 1 >= addresses_clone.len() { 0 } else { idx };
 
                         // 使用优化版本的交易构造（复用 signer 和 input）
                         let tx = make_legacy_tx_with_chain_id_optimized(
-                            &signers[idx],  // signer 引用
+                            &signers[safe_idx],  // signer 引用
                             gas_price,
                             gas_limit,
                             0, // ignore nonce
@@ -460,8 +471,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                         // RLP 编码
                         alloy_rlp::encode(&tx).into()
-                    })
-                    .collect();
+                    }).collect();
 
                     // 直接发送到内存池
                     if !encoded_txs.is_empty() {

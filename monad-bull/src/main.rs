@@ -17,7 +17,7 @@ use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig, ForwardedTxs};
-use monad_eth_testutil::make_legacy_tx_with_chain_id;
+use monad_eth_testutil::{make_legacy_tx_with_chain_id, make_legacy_tx_with_chain_id_optimized};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -56,11 +56,13 @@ use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, event, info, warn, Instrument, Level};
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
+use alloy_signer_local::PrivateKeySigner;
 use chrono::Utc;
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
+use rayon::prelude::*;
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 
@@ -383,14 +385,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         // 共享的 epoch 变量（供 spawn 任务读取）
         let current_epoch_clone = shared_epoch.clone();
+        // 共享的 seq_num 变量（供 spawn 任务读取）
         let current_seq_num_clone = shared_seq_num.clone();
 
         tokio::spawn(async move {
 
             let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
 
-            // 地址使用索引，循环使用地址池
-            let mut address_index: usize = 0;
+            // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
+            let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
             loop {
 
@@ -422,36 +425,43 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                     let now = Instant::now();
 
-                    // 批量收集交易数据（使用 RLP 编码）
-                    let mut encoded_txs: Vec<Bytes> = Vec::with_capacity(num_txs);
+                    // 预创建所有 signer
+                    let signers: Vec<PrivateKeySigner> = addresses_clone
+                    .par_iter()
+                    .map(|(_, secret)| {
+                        PrivateKeySigner::from_bytes(secret).unwrap_or_else(|e| {
+                            panic!("Failed to create signer: {:?}", e);
+                        })
+                    })
+                    .collect();
 
-                    for _ in 0..num_txs {
+                    // 预分配 zero input（复用）
+                    let zero_input = alloy_primitives::Bytes::from(vec![0u8; input_len]);
 
-                        // 使用当前索引的地址
-                        let (_address, secret) = &addresses_clone[address_index];
-
-                        // 检查是否需要重置索引（地址池一轮使用完毕）
-                        if address_index + 1 >= addresses_clone.len() {
-                            address_index = 0;
-                            info!(address_index, total_addresses = addresses_clone.len(), "====== Address index reset");
-                        } else {
-                            address_index += 1;
+                    // 批量并行处理所有交易
+                    let encoded_txs: Vec<Bytes> = (0..num_txs)
+                    .into_par_iter()
+                    .map(|_| {
+                        // 原子递增，循环使用地址池
+                        let idx = address_index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if idx + 1 >= addresses_clone.len() {
+                            address_index.store(0, std::sync::atomic::Ordering::SeqCst);
                         }
 
-                        // 构造普通交易
-                        let tx = make_legacy_tx_with_chain_id(
-                            secret.clone(),
+                        // 使用优化版本的交易构造（复用 signer 和 input）
+                        let tx = make_legacy_tx_with_chain_id_optimized(
+                            &signers[idx],  // signer 引用
                             gas_price,
                             gas_limit,
                             0, // ignore nonce
-                            input_len,
-                            chain_id,
+                            &zero_input,     // 复用 input
+                            chain_id
                         );
 
-                        // 使用 RLP 编码
-                        let encoded = alloy_rlp::encode(&tx);
-                        encoded_txs.push(encoded.into());
-                    }
+                        // RLP 编码
+                        alloy_rlp::encode(&tx).into()
+                    })
+                    .collect();
 
                     // 直接发送到内存池
                     if !encoded_txs.is_empty() {
@@ -467,7 +477,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         }
                     }
 
-                    info!(strategy = %strategy.description, epoch = current_epoch, seq_num = current_seq_num, num_txs, address_index, elapsed = now.elapsed().as_millis(), "====== Continuous fill txs done in background");
+                    info!(strategy = %strategy.description, epoch = current_epoch, seq_num = current_seq_num, num_txs, address_index = address_index.load(Ordering::SeqCst), elapsed = now.elapsed().as_millis(), "====== Continuous fill txs done in background");
 
                     Ok(())
                 };
@@ -487,7 +497,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         } else {
                             error!(panic = ?panic_info, "Continuous fill loop panicked with unknown error");
                         }
-                        address_index = 0;
+                        address_index.store(0, Ordering::SeqCst);
                         warn!("Restarting continuous fill loop...");
                     }
                 }
@@ -1074,20 +1084,20 @@ struct TxStrategy {
 /// 根据 epoch 获取交易策略
 fn get_tx_strategy(epoch: u64) -> TxStrategy {
     match epoch % 3 {
-        // 0 => TxStrategy {
-        //     enabled: false,
-        //     num_txs: 0,
-        //     input_len: 0,
-        //     gas_limit: 21_000,
-        //     description: "空块模式（epoch % 3 == 0）".to_string(),
-        // },
-        // 1 => TxStrategy {
-        //     enabled: true,
-        //     num_txs: rand::thread_rng().gen_range(500..=1000),
-        //     input_len: 300,
-        //     gas_limit: 50_000,
-        //     description: "低负载模式（epoch % 3 == 1）".to_string(),
-        // },
+        0 => TxStrategy {
+            enabled: false,
+            num_txs: 0,
+            input_len: 0,
+            gas_limit: 21_000,
+            description: "空块模式（epoch % 3 == 0）".to_string(),
+        },
+        1 => TxStrategy {
+            enabled: true,
+            num_txs: rand::thread_rng().gen_range(500..=1000),
+            input_len: 300,
+            gas_limit: 50_000,
+            description: "低负载模式（epoch % 3 == 1）".to_string(),
+        },
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(5000..=10000),

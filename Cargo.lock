@@ -5056,6 +5056,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer-local",
  "bytes",
  "chrono",
  "clap 4.5.47",

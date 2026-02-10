@@ -27,7 +27,7 @@ use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
 };
 use alloy_primitives::{
-    hex, keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, B256, U256,
+    hex, keccak256, Address, Bloom, Bytes, FixedBytes, Log, LogData, TxKind, B256, U256,
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -117,12 +117,26 @@ pub fn make_legacy_tx(
     transaction.into_signed(signature).into()
 }
 
+// 原始版本（保持兼容）
 pub fn make_legacy_tx_with_chain_id(
     sender: FixedBytes<32>,
     gas_price: u128,
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
+    chain_id: u64,
+) -> TxEnvelope {
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    make_legacy_tx_with_chain_id_optimized(&signer, gas_price, gas_limit, nonce, &Bytes::from(vec![0u8; input_len]), chain_id)
+}
+
+// 优化版本：复用 input，预创建 signer
+pub fn make_legacy_tx_with_chain_id_optimized(
+    signer: &PrivateKeySigner,
+    gas_price: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input: &Bytes,
     chain_id: u64,
 ) -> TxEnvelope {
     let transaction = TxLegacy {
@@ -132,10 +146,9 @@ pub fn make_legacy_tx_with_chain_id(
         gas_limit,
         to: TxKind::Call(Address::repeat_byte(0u8)),
         value: Default::default(),
-        input: vec![0; input_len].into(),
+        input: input.clone(),  // Bytes clone 是 O(1) 引用计数
     };
 
-    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
     let signature = signer
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();

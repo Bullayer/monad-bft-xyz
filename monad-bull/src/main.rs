@@ -420,9 +420,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                     }
 
-                    // 高负载模式跳过 sleep，直接开始构造数据
                     if !strategy.skip_sleep {
-                        tokio::time::sleep(vote_delay / 2).await;
+                        tokio::time::sleep(vote_delay / 4).await;
                     }
 
                     let num_txs = strategy.num_txs;
@@ -1119,7 +1118,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             num_txs: rand::thread_rng().gen_range(5000..=10000),
             input_len: 300,
             gas_limit: 50_000,
-            skip_sleep: true,
+            skip_sleep: false,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }
     }

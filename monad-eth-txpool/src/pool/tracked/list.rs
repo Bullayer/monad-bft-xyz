@@ -152,16 +152,16 @@ impl TrackedTxList {
             btree_map::Entry::Occupied(mut entry) => {
                 let (existing_tx, existing_tx_insert_time) = entry.get();
 
-                if !tx_expired(
-                    existing_tx_insert_time,
-                    limit_tracker.expiry_duration_during_insert(),
-                    &event_tracker.now,
-                ) && !tx.has_higher_priority(existing_tx, last_commit_base_fee)
-                {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
-                tracing::warn!(tx_hash = ?tx.hash(), existing_tx_hash = ?existing_tx.hash(), "TXPOOL DROP: ExistingHigherPriority");
-                    return None;
-                }
+                // if !tx_expired(
+                //     existing_tx_insert_time,
+                //     limit_tracker.expiry_duration_during_insert(),
+                //     &event_tracker.now,
+                // ) && !tx.has_higher_priority(existing_tx, last_commit_base_fee)
+                // {
+                //     event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+                // tracing::warn!(tx_hash = ?tx.hash(), existing_tx_hash = ?existing_tx.hash(), "TXPOOL DROP: ExistingHigherPriority");
+                //     return None;
+                // }
 
                 limit_tracker.add_tx(&tx);
                 limit_tracker.remove_tx(existing_tx);

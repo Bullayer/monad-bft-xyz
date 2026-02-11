@@ -1116,7 +1116,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(3000..=5000),
+            num_txs: rand::thread_rng().gen_range(1500..=3000),
             input_len: 300,
             gas_limit: rand::thread_rng().gen_range(30_000..=50_000),
             skip_sleep: false,

@@ -1117,8 +1117,8 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(2500..=5000),
-            input_len: 300,
-            gas_limit: rand::thread_rng().gen_range(30_000..=50_000),
+             input_len: 200,
+            gas_limit: rand::thread_rng().gen_range(21_000..=30_000),
             skip_sleep: false,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }

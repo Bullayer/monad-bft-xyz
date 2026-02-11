@@ -369,7 +369,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-         let addresses = generate_secrets(30000000).await;
+         let addresses = generate_secrets().await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
@@ -1029,13 +1029,25 @@ fn send_metrics(
 // 基础私钥（用于派生）
 const BASE_SECRET: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
-async fn generate_secrets(address_count: usize) -> Vec<(alloy_primitives::Address, B256)> {
+async fn generate_secrets() -> Vec<(alloy_primitives::Address, B256)> {
+
+    let address_count = std::env::var("ADDRESS_COUNT")
+        .unwrap_or_else(|_| "100000".to_string())
+        .parse::<usize>()
+        .unwrap_or(100_000);
+    info!("Using address count: {}", address_count);
+
+    let base_secret = std::env::var("MONAD_BASE_SECRET")
+        .unwrap_or_else(|_| BASE_SECRET.to_string())
+        .parse::<String>()
+        .unwrap_or(BASE_SECRET.to_string());
+    info!("Using base secret: {}", base_secret);
 
     // 开始计时
     let start_time = std::time::Instant::now();
 
     // 使用基础私钥的低 30 字节与索引组合，生成确定性派生密钥
-    let base_bytes: [u8; 32] = hex::decode(BASE_SECRET).unwrap().try_into().unwrap();
+    let base_bytes: [u8; 32] = hex::decode(base_secret).unwrap().try_into().unwrap();
 
     // 并发生成所有密钥和地址
     let tasks: Vec<_> = (0..address_count)
@@ -1119,7 +1131,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(5000..=10000),
+            num_txs: rand::thread_rng().gen_range(1500..=3000),
             input_len: 300,
             gas_limit: rand::thread_rng().gen_range(21_000..=30_000),
             description: "高负载模式（epoch % 3 == 2）".to_string(),

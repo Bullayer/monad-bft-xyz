@@ -369,7 +369,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-         let addresses = generate_secrets(20000000).await;
+         let addresses = generate_secrets(30000000).await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();

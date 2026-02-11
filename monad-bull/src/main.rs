@@ -400,7 +400,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         tokio::spawn(async move {
 
-            let vote_delay = CHAIN_PARAMS_LATEST.vote_pace;
+            // 发送间隔: 等待交易被打包的时间，区块时间约 2x 出块时间 ms，发送后需要等待至少 1-2 个区块
+            let send_interval = CHAIN_PARAMS_LATEST.vote_pace * 2;
 
             // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
             let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -420,9 +421,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                     }
 
-                    if !strategy.skip_sleep {
-                        tokio::time::sleep(vote_delay).await;
-                    }
+                    // 发送前等待，让之前的交易有机会被打包
+                    tokio::time::sleep(send_interval).await;
 
                     let num_txs = strategy.num_txs;
                     if num_txs > addresses_clone.len() {
@@ -1088,8 +1088,6 @@ struct TxStrategy {
     input_len: usize,
     /// Gas limit
     gas_limit: u64,
-    /// 是否跳过 sleep（高负载模式）
-    skip_sleep: bool,
     /// 描述
     description: String,
 }
@@ -1116,10 +1114,9 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(2500..=5000),
-             input_len: 200,
+            num_txs: rand::thread_rng().gen_range(5000..=10000),
+            input_len: 200,
             gas_limit: rand::thread_rng().gen_range(21_000..=30_000),
-            skip_sleep: false,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }
     }

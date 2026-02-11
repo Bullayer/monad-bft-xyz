@@ -232,9 +232,11 @@ where
     CRT: ChainRevision,
 {
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
+        let mut total_txs = 0;
         for ForwardedTxs { sender, txs } in forwarded_txs {
+            total_txs += txs.len();
             let _span = debug_span!("processing forwarded txs").entered();
-            debug!(
+            info!(
                 ?sender,
                 num_txs = txs.len(),
                 "txpool executor received forwarded txs"
@@ -621,6 +623,8 @@ where
                     inserted_addresses.insert(tx.signer());
                 },
             );
+
+            info!(num_inserted = inserted_addresses.len(), "txpool inserted forwarded txs");
 
             preload_manager.add_requests(inserted_addresses.iter());
 

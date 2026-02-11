@@ -656,7 +656,15 @@ where
             ProposalSequencer::new(self.tracked.iter(), &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
+        info!(
+            tracked_addresses = self.tracked.num_addresses(),
+            tracked_txs = self.tracked.num_txs(),
+            sequencer_len,
+            "txpool proposal sequencer created"
+        );
+
         if sequencer.is_empty() {
+            warn!("txpool sequencer is empty, no transactions available for proposal");
             return Ok(Vec::default());
         }
 

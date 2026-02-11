@@ -490,6 +490,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                         if let Err(e) = forwarded_tx_clone.try_send(vec![forwarded]) {
                             error!(error = %e, num_txs, "Failed to send txs to forwarded channel");
+                        } else {
+                            info!(num_txs, "Successfully sent txs to forwarded channel");
                         }
                     }
 
@@ -1133,7 +1135,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
             enabled: true,
             num_txs: rand::thread_rng().gen_range(3000..=5000),
             input_len: 16,
-            gas_limit: 21_000,
+            gas_limit: 30_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }
     }

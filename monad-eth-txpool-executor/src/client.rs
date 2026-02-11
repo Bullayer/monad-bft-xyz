@@ -40,9 +40,9 @@ where
     pub txs: Vec<Bytes>,
 }
 
-const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
-const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 1024;
-const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
+const DEFAULT_COMMAND_BUFFER_SIZE: usize = 64 * 1024;
+const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 256 * 1024;
+const DEFAULT_EVENT_BUFFER_SIZE: usize = 64 * 1024;
 
 pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where

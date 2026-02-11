@@ -134,11 +134,12 @@ impl TrackedTxList {
         tx: ValidEthTransaction,
         last_commit_base_fee: u64,
     ) -> Option<&ValidEthTransaction> {
-        if tx.nonce() < self.account_nonce {
-            event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
-            tracing::warn!(nonce = tx.nonce(), account_nonce = self.account_nonce, tx.hash = ?tx.hash(), "TXPOOL DROP: NonceTooLow");
-            return None;
-        }
+        // TODO: 临时去掉 nonce 验证，允许任意 nonce
+        // if tx.nonce() < self.account_nonce {
+        //     event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
+        //     tracing::warn!(nonce = tx.nonce(), account_nonce = self.account_nonce, tx.hash = ?tx.hash(), "TXPOOL DROP: NonceTooLow");
+        //     return None;
+        // }
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
@@ -151,16 +152,16 @@ impl TrackedTxList {
             btree_map::Entry::Occupied(mut entry) => {
                 let (existing_tx, existing_tx_insert_time) = entry.get();
 
-                if !tx_expired(
-                    existing_tx_insert_time,
-                    limit_tracker.expiry_duration_during_insert(),
-                    &event_tracker.now,
-                ) && !tx.has_higher_priority(existing_tx, last_commit_base_fee)
-                {
-                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
-                tracing::warn!(tx_hash = ?tx.hash(), existing_tx_hash = ?existing_tx.hash(), "TXPOOL DROP: ExistingHigherPriority");
-                    return None;
-                }
+                // if !tx_expired(
+                //     existing_tx_insert_time,
+                //     limit_tracker.expiry_duration_during_insert(),
+                //     &event_tracker.now,
+                // ) && !tx.has_higher_priority(existing_tx, last_commit_base_fee)
+                // {
+                //     event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+                // tracing::warn!(tx_hash = ?tx.hash(), existing_tx_hash = ?existing_tx.hash(), "TXPOOL DROP: ExistingHigherPriority");
+                //     return None;
+                // }
 
                 limit_tracker.add_tx(&tx);
                 limit_tracker.remove_tx(existing_tx);

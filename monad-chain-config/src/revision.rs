@@ -69,7 +69,7 @@ pub struct ChainParams {
 }
 
 const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
-    tx_limit: 20_000,
+    tx_limit: 50_000,
     proposal_gas_limit: 450_000_000,
     proposal_byte_limit: 6_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
@@ -78,7 +78,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
-    tx_limit: 20_000,
+    tx_limit: 50_000,
     proposal_gas_limit: 450_000_000,
     proposal_byte_limit: 6_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
@@ -87,7 +87,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
 };
 
 const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
-    tx_limit: 20_000,
+    tx_limit: 50_000,
     proposal_gas_limit: 450_000_000,
     proposal_byte_limit: 6_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
@@ -96,7 +96,7 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
 };
 
 const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
-    tx_limit: 20_000,
+    tx_limit: 50_000,
     proposal_gas_limit: 450_000_000,
     proposal_byte_limit: 6_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON

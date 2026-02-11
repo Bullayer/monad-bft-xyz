@@ -400,7 +400,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         tokio::spawn(async move {
 
-            let send_interval = CHAIN_PARAMS_LATEST.vote_pace * 5;
+            let send_interval = CHAIN_PARAMS_LATEST.vote_pace * EXECUTION_DELAY as u32;
 
             // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
             let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1131,9 +1131,9 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         // },
         _ => TxStrategy {  // 2
             enabled: true,
-            num_txs: rand::thread_rng().gen_range(1500..=3000),
-            input_len: 300,
-            gas_limit: rand::thread_rng().gen_range(21_000..=30_000),
+            num_txs: rand::thread_rng().gen_range(3000..=5000),
+            input_len: 16,
+            gas_limit: 21_000,
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }
     }

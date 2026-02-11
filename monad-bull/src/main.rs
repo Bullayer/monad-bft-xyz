@@ -369,7 +369,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-        let addresses = generate_secrets(2000000).await;
+         let addresses = generate_secrets(20000000).await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
@@ -400,8 +400,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         tokio::spawn(async move {
 
-            // 发送间隔: 等待交易被打包的时间，区块时间约 2x 出块时间 ms，发送后需要等待至少 1-2 个区块
-            let send_interval = CHAIN_PARAMS_LATEST.vote_pace * 2;
+            let send_interval = CHAIN_PARAMS_LATEST.vote_pace;
 
             // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
             let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -414,6 +413,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     // 从共享变量拿到最新的 epoch / seq_num
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
                     let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
+
+                    // seq_num < 3 时不构造数据（等待出块）
+                    if current_seq_num < 3 {
+                        tokio::time::sleep(send_interval).await;
+                        return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                    }
 
                     let strategy = get_tx_strategy(current_epoch);
                     if !strategy.enabled {
@@ -1115,7 +1120,7 @@ fn get_tx_strategy(epoch: u64) -> TxStrategy {
         _ => TxStrategy {  // 2
             enabled: true,
             num_txs: rand::thread_rng().gen_range(5000..=10000),
-            input_len: 30,
+            input_len: 300,
             gas_limit: rand::thread_rng().gen_range(21_000..=30_000),
             description: "高负载模式（epoch % 3 == 2）".to_string(),
         }

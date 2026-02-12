@@ -491,7 +491,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         if let Err(e) = forwarded_tx_clone.try_send(vec![forwarded]) {
                             error!(error = %e, num_txs, "Failed to send txs to forwarded channel");
                         } else {
-                            info!(num_txs, "Successfully sent txs to forwarded channel");
+                            // info!(num_txs, "Successfully sent txs to forwarded channel");
                         }
                     }
 

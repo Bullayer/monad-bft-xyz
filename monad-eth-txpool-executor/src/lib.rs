@@ -236,11 +236,11 @@ where
         for ForwardedTxs { sender, txs } in forwarded_txs {
             total_txs += txs.len();
             let _span = debug_span!("processing forwarded txs").entered();
-            info!(
-                ?sender,
-                num_txs = txs.len(),
-                "txpool executor received forwarded txs"
-            );
+            // info!(
+            //     ?sender,
+            //     num_txs = txs.len(),
+            //     "txpool executor received forwarded txs"
+            // );
 
             let mut num_invalid_bytes = 0;
 
@@ -624,7 +624,7 @@ where
                 },
             );
 
-            info!(num_inserted = inserted_addresses.len(), "txpool inserted forwarded txs");
+            // info!(num_inserted = inserted_addresses.len(), "txpool inserted forwarded txs");
 
             preload_manager.add_requests(inserted_addresses.iter());
 

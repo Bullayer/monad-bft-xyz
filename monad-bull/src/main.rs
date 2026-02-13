@@ -400,7 +400,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         tokio::spawn(async move {
 
+            let wait_time = std::env::var("MONAD_CONTINUOUS_WAIT_TIME")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<usize>()
+            .unwrap_or(10);
+            info!("====== Waiting for {} seconds", wait_time);
+            tokio::time::sleep(Duration::from_secs(wait_time as u64)).await;
+
             let send_interval = CHAIN_PARAMS_LATEST.vote_pace * EXECUTION_DELAY as u32;
+            info!("====== Send interval: {}", send_interval.as_secs());
 
             // 地址使用索引，循环使用地址池（原子类型支持并行闭包内修改）
             let address_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -416,6 +424,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                     // seq_num < 3 时不构造数据（等待出块）
                     if current_seq_num < 3 {
+                        warn!(current_seq_num, "====== Waiting for block to be committed");
                         tokio::time::sleep(send_interval).await;
                         return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                     }

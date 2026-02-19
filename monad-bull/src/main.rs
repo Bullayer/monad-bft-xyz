@@ -369,7 +369,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     if enable_continuous_fill {
         info!("Continuous fill enabled");
 
-         let addresses = generate_secrets().await;
+        info!("====== Generate addresses pool ...");
+        let addresses = generate_secrets().await;
 
         // 直接发送交易到内存池（使用 forwarded_tx）
         let forwarded_tx_clone = executor.txpool.forwarded_tx.clone();
@@ -400,15 +401,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
         tokio::spawn(async move {
 
-            let wait_time = std::env::var("MONAD_CONTINUOUS_WAIT_TIME")
+            let wait_to_seq_num = std::env::var("MONAD_CONTINUOUS_SEND_TX_SEQ_NUM")
             .unwrap_or_else(|_| "10".to_string())
-            .parse::<usize>()
+            .parse::<u64>()
             .unwrap_or(10);
-            
-            for i in (1..wait_time).rev() {
-                info!("====== Send txs after {} second(s)", i);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
             
             let send_interval = CHAIN_PARAMS_LATEST.vote_pace * EXECUTION_DELAY as u32;
             info!("====== Send interval: {}", send_interval.as_secs());
@@ -425,9 +421,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let current_epoch = current_epoch_clone.load(Ordering::SeqCst);
                     let current_seq_num = current_seq_num_clone.load(Ordering::SeqCst);
 
-                    // seq_num < 3 时不构造数据（等待出块）
-                    if current_seq_num < 3 {
-                        warn!(current_seq_num, "====== Waiting for block to be committed");
+                    // seq_num < wait_to_seq_num 时不构造数据
+                    if current_seq_num < wait_to_seq_num {
+                        warn!(current_seq_num, "====== Waiting for block to be committed to seq_num: {}", wait_to_seq_num);
                         tokio::time::sleep(send_interval).await;
                         return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                     }

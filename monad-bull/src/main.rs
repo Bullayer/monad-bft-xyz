@@ -404,9 +404,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .unwrap_or_else(|_| "10".to_string())
             .parse::<usize>()
             .unwrap_or(10);
-            info!("====== Waiting for {} seconds", wait_time);
-            tokio::time::sleep(Duration::from_secs(wait_time as u64)).await;
-
+            
+            for i in (1..wait_time).rev() {
+                info!("====== Send txs after {} second(s)", i);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            
             let send_interval = CHAIN_PARAMS_LATEST.vote_pace * EXECUTION_DELAY as u32;
             info!("====== Send interval: {}", send_interval.as_secs());
 

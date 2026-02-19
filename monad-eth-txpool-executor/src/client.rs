@@ -40,8 +40,11 @@ where
     pub txs: Vec<Bytes>,
 }
 
+// 命令通道缓冲区的默认大小（64K）
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 64 * 1024;
+// 转发交易通道缓冲区的默认大小（256K）
 const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 256 * 1024;
+// 事件通道缓冲区的默认大小（64K）
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 64 * 1024;
 
 pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>

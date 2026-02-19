@@ -22,6 +22,7 @@ use thiserror::Error;
 
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
+/// 序列化版本号，用于消息格式版本控制
 const SERIALIZE_VERSION: u32 = 1;
 pub const MAX_MESSAGE_SIZE: usize = 12 * 1024 * 1024;
 

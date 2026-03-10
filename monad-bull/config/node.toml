@@ -9,7 +9,7 @@
 # Node-specific configuration
 #########################################################
 beneficiary = "0x0000000000000000000000000000000000000000"
-node_name = "dev-node"
+node_name = "dev-node-1"
 network_name = "devnet"
 ipc_tx_batch_size = 5000                                # 每批 5000 tx 按内存池拒绝大小来
 ipc_max_queued_batches = 100                            # 最大队列 
@@ -28,7 +28,9 @@ chain_id = 20143
 # Node-specific configuration
 #########################################################
 [bootstrap]
-peers = []
+peers = [
+  { address = "127.0.0.1:8001", secp256k1_pubkey = "0x02093852f554d6196025b0bebe21ea646f73e34f1fd6f154e6ae77c890363ea5be", record_seq_num = 0, name_record_sig = "4d2d31500cf08fbc332b1032240ad2ae52f3af79c7798bcbeabcde6a52b0f2b83bd0fbd1d24926875569526e95c667bf4bc32a314185f1a92490ec17cd503eab01" }
+]
 # [[bootstrap.peers]]
 # address = "192.168.2.106:8000"
 # record_seq_num = 0
@@ -36,15 +38,14 @@ peers = []
 # name_record_sig = "6a332aff5406ecd3ebe8f69153d1cb83393af8edcd2482b40e282b87949304af546c5bcdb507e84e20a2165f45917cce309d21a7b0b44f01fa143922bed056a401"
 
 [peer_discovery]
-self_address = "0.0.0.0:8000"
+self_address = "127.0.0.1:8000" # # 用本地 loopback，避免 0.0.0.0 冲突
 self_record_seq_num = 0
-# self_name_record_sig = "c98647175522973cc67e5851a0a3ab472a6b7b11f93fe3a1db38fe7d086f3aa3466b5bd2b13b8996d9593e1d3cf07682d366441b5cd1d4db63f049e351e649b300"
-self_name_record_sig = "85663053b3d719985357b56270ba320abadd1c51e10ea06430f3990d81393dc7770ff661c331bd631afca705029b0fd77cc0f48d46b37c8d8523c73c6af1242801"
-refresh_period = 120
+self_name_record_sig = "e595cb8bbe9dcf47ffaca03b077ec8716ff3bea60e94b95993f0430136034cc81d8a0f537ad7e1a3930f8eb35b59235595706ab1a5e726631c832d25bf56f5b600"
+refresh_period = 5
 request_timeout = 5
-unresponsive_prune_threshold = 5
-last_participation_prune_threshold = 5000
-min_num_peers = 0
+unresponsive_prune_threshold = 3
+last_participation_prune_threshold = 100
+min_num_peers = 1
 max_num_peers = 200
 
 [fullnode_dedicated]
@@ -64,12 +65,12 @@ init_peers = []
 # secp256k1_pubkey = "..."
 
 [fullnode_raptorcast]
-enable_publisher = false
-enable_client = false
+enable_publisher = true
+enable_client = true
 raptor10_fullnode_redundancy_factor = 3.0
 max_group_size = 10
-round_span = 240
-invite_lookahead = 120
+round_span = 60
+invite_lookahead = 30
 max_invite_wait = 10
 deadline_round_dist = 10
 init_empty_round_span = 23
@@ -82,7 +83,7 @@ invite_accept_heartbeat_ms = 10000
 identities = []
 
 [network]
-bind_address_host = "0.0.0.0"
+bind_address_host = "127.0.0.1"
 bind_address_port = 8000
 max_rtt_ms = 300
 max_mbps = 1000

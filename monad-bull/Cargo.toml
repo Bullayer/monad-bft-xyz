@@ -4,6 +4,10 @@ description = "Monad bull node"
 version = "0.1.0"
 edition = "2021"
 
+[profile.dev]
+opt-level = 0  # 开启基础优化，不至于太慢
+debug = true   # 保留调试信息
+
 [[bin]]
 name = "monad-bull"
 bench = false

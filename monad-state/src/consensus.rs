@@ -311,6 +311,20 @@ where
         }
     }
 
+    /// 处理来自交易池（Mempool）的事件
+    ///
+    /// 这是共识层接收交易池消息的入口点。交易池在以下情况会发送事件：
+    /// 1. **创建提案** - 当节点是当前轮次的领导者，创建了新区块提案
+    /// 2. **转发交易** - 当从其他节点接收到需要转发的交易
+    ///
+    /// # Arguments
+    /// * `event` - 来自交易池的事件（Proposal 或 ForwardedTxs）
+    ///
+    /// # Returns
+    /// 返回需要执行的命令列表，包括：
+    /// - 发布提案到网络（通过 RaptorCast）
+    /// - 插入转发的交易到交易池
+    /// - 转发交易给其他验证者
     pub(super) fn handle_mempool_event(
         &mut self,
         event: MempoolEvent<ST, SCT, EPT>,
@@ -327,11 +341,15 @@ where
             CRT,
         >,
     > {
+        // 首先尝试构建共识状态包装器
+        // 如果当前不是 Live 模式（共识未启动），则无法处理提案事件
         let Some(consensus) = self.try_build_state_wrapper() else {
             match event {
+                // 理论上不应该发生：如果共识未启动，交易池不应该发送提案
                 MempoolEvent::Proposal { .. } => {
                     unreachable!("txpool should never emit proposal while not live!")
                 }
+                // 共识未启动时，转发的交易直接忽略
                 MempoolEvent::ForwardedTxs { .. } | MempoolEvent::ForwardTxs(_) => {
                     return Vec::default()
                 }
@@ -339,6 +357,14 @@ where
         };
 
         match event {
+            /// 分支 1: Proposal - 处理新区块提案
+            ///
+            /// 当当前节点被选为轮次领导者时，交易池创建提案后发送此事件。
+            /// 处理流程：
+            /// 1. 构建共识区块体（包装执行区块体）
+            /// 2. 构建共识区块头（包含签名、QC、时间戳等）
+            /// 3. 创建 ProposalMessage
+            /// 4. 签名并通过 RaptorCast 广播到网络
             MempoolEvent::Proposal {
                 epoch,
                 round,
@@ -356,9 +382,13 @@ where
             } => {
                 let _span = debug_span!("mempool proposal").entered();
                 consensus.metrics.consensus_events.creating_proposal += 1;
+
+                // Step 1: 构建共识区块体
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });
+
+                // Step 2: 构建共识区块头
                 let block_header = ConsensusBlockHeader::new(
                     *consensus.nodeid,
                     epoch,
@@ -375,6 +405,7 @@ where
                     base_fee_moment,
                 );
 
+                // Step 3: 创建提案消息
                 let p = ProposalMessage {
                     proposal_epoch: epoch,
                     proposal_round: round,
@@ -387,33 +418,45 @@ where
                     last_round_tc,
                 };
 
+                // Step 4: 签名并创建最终的消息
                 let msg = ConsensusMessage {
                     version: consensus.version.to_owned(),
                     message: ProtocolMessage::Proposal(p),
                 }
                 .sign(self.keypair);
 
+                // Step 5: 通过 RaptorCast 广播提案
+                // RaptorCast 是 Monad 的高效广播协议，用于向所有验证者传播区块/投票
                 vec![Command::RouterCommand(RouterCommand::Publish {
                     target: RouterTarget::Raptorcast(epoch),
                     message: VerifiedMonadMessage::Consensus(msg),
                 })]
             }
+
+            /// 分支 2: ForwardedTxs - 插入收到的转发交易
+            ///
+            /// 当从其他节点收到转发的交易时，将其插入本地交易池
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
                     sender,
                     txs,
                 })]
             }
+
+            /// 分支 3: ForwardTxs - 转发交易给其他验证者
+            ///
+            /// 当本地交易池收到新交易时，需要将其转发给其他验证者。
+            /// 目标受众是未来几轮的领导者（他们可能需要这些交易来创建提案）。
             MempoolEvent::ForwardTxs(txs) => {
                 consensus
                     .iter_future_other_leaders()
                     .map(|target| {
-                        // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
-                        // that we can:
-                        // 1. avoid cloning txns
-                        // 2. avoid serializing multiple times
-                        // 3. avoid raptor coding multiple times
-                        // 4. use 1 sendmmsg in the router
+                        // TODO 优化：理想情况下应该批量发送
+                        // 这样可以避免：
+                        // 1. 多次克隆交易
+                        // 2. 多次序列化
+                        // 3. 多次 Raptor 编码
+                        // 4. 使用一次 sendmmsg
                         Command::RouterCommand(RouterCommand::Publish {
                             target: RouterTarget::PointToPoint(target),
                             message: VerifiedMonadMessage::ForwardedTx(txs.clone()),

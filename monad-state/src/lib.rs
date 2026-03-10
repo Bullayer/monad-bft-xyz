@@ -1320,6 +1320,46 @@ where
         }
     }
 
+    /// 尝试启动共识
+    ///
+    /// 当节点从 Sync 模式转换到 Live 模式时调用此方法。
+    /// 这是共识启动的关键方法，负责：
+    /// 1. 检查是否已完成区块同步（committed-block-sync）
+    /// 2. 检查是否已完成状态同步（db_status）
+    /// 3. 重置区块策略和交易池
+    /// 4. 提交最近的区块到账本
+    /// 5. 验证验证者集
+    /// 6. 创建共识状态并切换到 Live 模式
+    ///
+    /// # Invariants（不变式）
+    /// - N = root_qc_seq_num（根区块的 QC 序列号）
+    /// - DoneSync(n) 中的 n = N - delay
+    /// - (N-2*delay, N] 范围内的区块已被提交
+    /// - (N-delay-256, N-delay] 的区块哈希可用于执行
+    /// - (N-delay, N] 的根已请求
+    ///
+    /// # Returns
+    /// 需要执行的命令列表
+    /// 尝试启动共识
+    ///
+    /// 当节点从 Sync 模式转换到 Live 模式时调用此方法。
+    /// 这是共识启动的关键方法，负责：
+    /// 1. 检查是否已完成区块同步（committed-block-sync）
+    /// 2. 检查是否已完成状态同步（db_status）
+    /// 3. 重置区块策略和交易池
+    /// 4. 提交最近的区块到账本
+    /// 5. 验证验证者集
+    /// 6. 创建共识状态并切换到 Live 模式
+    ///
+    /// # Invariants（不变式）
+    /// - N = root_qc_seq_num（根区块的 QC 序列号）
+    /// - DoneSync(n) 中的 n = N - delay
+    /// - (N-2*delay, N] 范围内的区块已被提交
+    /// - (N-delay-256, N-delay] 的区块哈希可用于执行
+    /// - (N-delay, N] 的根已请求
+    ///
+    /// # Returns
+    /// 需要执行的命令列表
     fn maybe_start_consensus(
         &mut self,
     ) -> Vec<
@@ -1335,6 +1375,7 @@ where
             CRT,
         >,
     > {
+        // 从 Sync 模式中提取状态
         let ConsensusMode::Sync {
             high_certificate,
             block_buffer,
@@ -1347,11 +1388,11 @@ where
         };
 
         let root_parent_chain = block_buffer.root_parent_chain();
-        // check:
-        // 1. earliest_block is early enough to start consensus
-        // 2. db_status == Done
 
-        // 1. committed-block-sync
+        // ================================================================
+        // 阶段 1: 检查是否需要区块同步 (committed-block-sync)
+        // ================================================================
+        // 如果 block_buffer 还缺少区块，需要先进行区块同步
         if let Some(block_range) = block_buffer.needs_blocksync() {
             tracing::info!(
                 ?db_status,
@@ -1359,23 +1400,33 @@ where
                 root_seq_num =? block_buffer.root_seq_num(),
                 "still syncing..."
             );
+            // 请求区块同步
             return self.update(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
                 requester: BlockSyncSelfRequester::StateSync,
                 block_range,
             }));
         }
 
+        // ================================================================
+        // 阶段 2: 检查数据库同步状态
+        // ================================================================
         let root_info = block_buffer
             .root_info()
             .expect("blocksync done, root block should be known");
         let root_seq_num = root_info.seq_num;
 
+        // 计算延迟执行的序列号
+        // delay 用于确保在执行 N 区块前，N-2*delay 到 N-delay 的区块已经准备好
         let delay = self.consensus_config.execution_delay;
         let delay_seq_num = root_seq_num.max(delay) - delay;
 
+        // --------------------------------------------------------
+        // 2a: 等待数据库同步开始
+        // --------------------------------------------------------
         if db_status == &DbSyncStatus::Waiting {
             *db_status = DbSyncStatus::Started;
 
+            // 找到延迟块的父块（用于验证执行结果）
             let delay_block_id = {
                 let delay_child_seq_num = delay_seq_num + SeqNum(1);
 
@@ -1396,19 +1447,21 @@ where
                     })
             };
 
-            // We use get_execution_result as a proxy to determine if the delay_block has been executed.
+            // 检查延迟块是否已经执行过
+            // 使用 get_execution_result 作为代理来判断是否已执行
             let delay_executed = self
                 .state_backend
                 .get_execution_result(&delay_block_id, &delay_seq_num, true)
                 .is_ok();
 
+            // 如果延迟块已执行，直接完成状态同步
             if delay_executed {
-                // TODO assert state root matches?
                 return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
                     delay_seq_num,
                 )));
             }
 
+            // 获取延迟块的执行结果
             let delayed_execution_result = block_buffer
                 .root_delayed_execution_result()
                 .expect("is DB state empty? use execution to populate genesis if so");
@@ -1418,6 +1471,7 @@ where
                 "always 1 execution result after first k-1 blocks for now"
             );
 
+            // 检查本地状态是否过于陈旧
             let maybe_latest_finalized_block = self.state_backend.raw_read_latest_finalized_block();
             if let Some(latest_finalized_block) = maybe_latest_finalized_block {
                 if latest_finalized_block.saturating_add(STATESYNC_BLOCK_THRESHOLD) < delay_seq_num
@@ -1433,6 +1487,7 @@ where
                 warn!("starting from empty state, consider fetching a snapshot first");
             }
 
+            // 触发状态同步
             self.metrics.consensus_events.trigger_state_sync += 1;
             return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
                 delayed_execution_result
@@ -1440,7 +1495,11 @@ where
                     .expect("asserted 1 execution result")
                     .clone(),
             ))];
-        } else if db_status == &DbSyncStatus::Started {
+        }
+        // --------------------------------------------------------
+        // 2b: 数据库同步进行中，等待完成
+        // --------------------------------------------------------
+        else if db_status == &DbSyncStatus::Started {
             tracing::info!(
                 ?db_status,
                 earliest_block =? root_parent_chain.last().map(|block| block.get_seq_num()),
@@ -1450,11 +1509,16 @@ where
             return Vec::new();
         }
 
+        // ================================================================
+        // 阶段 3: 数据库同步完成，准备启动共识
+        // ================================================================
         assert_eq!(db_status, &DbSyncStatus::Done);
         let mut commands = Vec::new();
 
-        let delay = self.consensus_config.execution_delay;
-        // TFM reserve balance checking requires N-2*state_root_delay+2 blocks to validate N
+        // --------------------------------------------------------
+        // 3a: 提取并验证最近的 delay*2 个区块
+        // --------------------------------------------------------
+        // TFM reserve balance checking 需要 N-2*state_root_delay+2 个区块来验证 N
         // let N == root_qc_seq_num
         // n in DoneSync(n) == N - delay
         // (N-2*delay, N] have been committed
@@ -1467,8 +1531,8 @@ where
                     .validate(
                         full_block.header().clone(),
                         full_block.body().clone(),
-                        // we don't need to validate bls pubkey fields (randao)
-                        // this is because these blocks are already committed by majority
+                        // 不需要验证 BLS 公钥字段（randao）
+                        // 因为这些区块已经被多数共识确认
                         None,
                         &self.consensus_config.chain_config,
                         &mut self.metrics,
@@ -1479,7 +1543,10 @@ where
             .rev()
             .collect();
 
-        // reset block_policy and txpool
+        // --------------------------------------------------------
+        // 3b: 重置区块策略和交易池
+        // --------------------------------------------------------
+        // 使用最近的 delay*2 区块来重置状态
         self.block_policy.reset(
             last_two_delay_committed_blocks.iter().collect(),
             &self.consensus_config.chain_config,
@@ -1488,23 +1555,33 @@ where
             last_delay_committed_blocks: last_two_delay_committed_blocks.clone(),
         }));
 
-        // commit blocks
+        // --------------------------------------------------------
+        // 3c: 提交区块到账本
+        // --------------------------------------------------------
         for block in last_two_delay_committed_blocks {
+            // 乐观提交
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Proposed(block.deref().to_owned()),
             )));
+            // 最终确认提交
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Finalized(block.deref().to_owned()),
             )));
+            // 通知验证者集区块已最终确认
             commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
                 block.get_seq_num(),
             )));
         }
 
+        // --------------------------------------------------------
+        // 3d: 验证锁定 epoch 的验证者集
+        // --------------------------------------------------------
         for epoch_valset in locked_epoch_validators {
             let locked_epoch = epoch_valset.epoch;
 
+            // 如果已超过 staking 激活 epoch，验证数据
             if locked_epoch >= self.consensus_config.chain_config.get_staking_activation() {
+                // 从验证者配置构建期望的验证者数据
                 let expected_val_data: BTreeMap<
                     NodeId<SCT::NodeIdPubKey>,
                     (Stake, SignatureCollectionPubKeyType<SCT>),
@@ -1515,16 +1592,18 @@ where
                     .map(|val_data| (val_data.node_id, (val_data.stake, val_data.cert_pubkey)))
                     .collect();
 
+                // 从数据库读取实际的验证者数据
                 let db_val_data: BTreeMap<
                     NodeId<SCT::NodeIdPubKey>,
                     (Stake, SignatureCollectionPubKeyType<SCT>),
                 > = self
                     .state_backend
-                    .read_valset_at_block(delay_seq_num, locked_epoch) // TODO use root_seq_num here
+                    .read_valset_at_block(delay_seq_num, locked_epoch)
                     .into_iter()
                     .map(|(pubkey, cert_pubkey, stake)| (NodeId::new(pubkey), (stake, cert_pubkey)))
                     .collect();
 
+                // 验证数据一致性
                 assert_eq!(
                     expected_val_data, db_val_data,
                     "Unexpected locked epoch valset"
@@ -1532,14 +1611,14 @@ where
             }
         }
 
+        // --------------------------------------------------------
+        // 3e: 收集缓存的提案
+        // --------------------------------------------------------
         let cached_proposals = block_buffer.proposals().cloned().collect_vec();
 
-        // Invariants:
-        // let N == root_qc_seq_num
-        // n in DoneSync(n) == N - delay
-        // (N-2*delay, N] have been committed
-        // (N-delay-256, N-delay] block hashes are available to execution
-        // (N-delay, N] roots have been requested
+        // ================================================================
+        // 阶段 4: 创建共识状态并切换到 Live 模式
+        // ================================================================
         let consensus = ConsensusState::new(
             &self.epoch_manager,
             &self.consensus_config,
@@ -1552,14 +1631,17 @@ where
             ?high_certificate,
             "done syncing, initializing consensus"
         );
+
+        // 切换到 Live 模式
         self.consensus = ConsensusMode::Live(consensus);
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
-        // technically we should be waiting for the vote pacing timer
-        // to expire before we set scheduled_vote to TimerFired
-        //
-        // in practice, it won't make a difference, because f+1 nodes
-        // would need to restart at the exact same time and finish
-        // statesyncing/blocksyncing within the vote pacing window
+
+        // --------------------------------------------------------
+        // 4a: 发送初始投票和超时
+        // --------------------------------------------------------
+        // 技术上我们应该等待投票节奏计时器到期后再设置 scheduled_vote 为 TimerFired
+        // 实际上这不会造成问题，因为需要 f+1 个节点在同一时刻重启
+        // 并在投票节奏窗口内完成状态同步
         commands.extend(
             self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(
                 current_round,
@@ -1570,6 +1652,10 @@ where
                 current_round,
             ))),
         );
+
+        // --------------------------------------------------------
+        // 4b: 处理缓存的提案
+        // --------------------------------------------------------
         for (sender, proposal) in cached_proposals {
             let mut consensus = ConsensusChildState::new(self);
             commands.extend(
@@ -1579,10 +1665,13 @@ where
                     .flat_map(Into::<Vec<_>>::into),
             );
         }
+
+        // --------------------------------------------------------
+        // 4c: 确保从 high_qc 开始区块同步
+        // --------------------------------------------------------
+        // 这只有在没有缓存提案（带有较新的 QC）的情况下才会执行
+        // 这可能只在链停止时发生
         {
-            // this is to make sure that we initiate blocksyncing from high_qc
-            // this only does anything if no cached proposals (with newer QCs) are processed above
-            // this likely would only happen if the chain was halted
             let blocksync_cmds = {
                 let ConsensusMode::Live(consensus) = &mut self.consensus else {
                     unreachable!()
@@ -1597,6 +1686,7 @@ where
                     .flat_map(Into::<Vec<_>>::into),
             );
         };
+
         commands
     }
 }

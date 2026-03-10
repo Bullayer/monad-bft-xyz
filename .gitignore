@@ -27,7 +27,8 @@ deployed_contracts.json
 
 .DS_Store
 
-.history
-**/config/forkpoint/
-**/config/ledger/
-**/config/wal_*
+.history/*
+monad-bull/config/forkpoint.rlp.*
+monad-bull/config/forkpoint.toml.*
+monad-bull/config/wal_*
+monad-bull/config/ledger/*

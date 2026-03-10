@@ -1,0 +1,6 @@
+# Rust Coding Standards for Monad
+- Use async/await with Tokio runtime.
+- Prefer `anyhow` for error handling in binaries and `thiserror` in libraries.
+- Always use `rust-analyzer` for type inference.
+- Follow clippy suggestions.
+- For high-performance code, avoid unnecessary allocations and prefer zero-copy patterns.
